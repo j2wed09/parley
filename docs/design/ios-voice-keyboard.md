@@ -1033,9 +1033,9 @@ would grow the text on every pass.
 ### Recognition context
 
 Rewriting after the fact is the second line; the first is biasing recognition
-at the source. Every relay session — dictation and meetings alike, as on the
+at the source. Every streaming session — dictation and meetings alike, as on the
 desktop — sends `LexiconStore.recognitionTerms()` as `hints.terms` in the
-`start` frame (see `docs/design/stt-protocol.md`), cleaned exactly as the
+`start` frame (`ParleyStreamProtocol.Start.hints`; see `docs/design/stt-protocol.md`), cleaned exactly as the
 desktop cleans them (`clean_vocabulary`: trimmed, no empties, de-duplicated in
 order) and capped at 200, the desktop's `VOCABULARY_LIMIT`. With no terms the
 field is omitted. The hosted service applies the terms as recognition bias, as

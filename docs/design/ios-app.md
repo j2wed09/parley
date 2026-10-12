@@ -31,7 +31,7 @@ iOS 版不是「把桌機塞進手機」。它是補上另一半的會議形態�
 | D4 | 手機 UI 形態 | 提案 直接落實 stage-bundles S22「呼吸版 / second-attention」：一行狀態 + 一個 intervention + 可下拉的逐字稿。手機本來只能瞄一眼，這反而是設計上最誠實的螢幕 |
 | D5 | 開源與 repo | ✅拍板 iOS app **開源**，放**本 repo `ios/`（monorepo）**。本 repo 早已是多產物形態（`website/`、`virtual-mic/`、`mcp/` 與桌機同居），iOS 延續慣例；sync 合約文件與兩個實作者同 repo、issue 一處追蹤。邊界不變：**cloud 仍留在 parley-internal**。iOS release 用獨立 tag namespace（`ios-v*`）與獨立 workflow，不碰現有 `release.yml` |
 | D6 | 憑證與設定同步 | 提案 **API key 不上雲**（安全理由見 §9.1）。手機預設用 hosted provider（登入即可用，本來就不需要 key）；BYOK 在手機自行輸入存 **Keychain**。上雲的只有非機密設定：model 選擇、語言、eval templates、scenario bundles |
-| D7 | me/them 判定 | 提案 iOS 全程走 `"mix"` 單一 STT session（hosted diarization 已預設開啟）。「誰是我」用**錄前 3 秒 enrollment 或錄後在逐字稿上點一下指定**，同場自動套用。不在 v1 做聲紋跨場身分 |
+| D7 | me/them 判定 | 提案 iOS 全程走 `"mix"` 單一 STT session（hosted 轉錄的 diarization 已預設開啟）。「誰是我」用**錄前 3 秒 enrollment 或錄後在逐字稿上點一下指定**，同場自動套用。不在 v1 做聲紋跨場身分 |
 | D8 | 音檔格式 | 提案 維持 **Ogg/Opus 16k mono**，與桌機 [`replay_audio.rs`](../../src-tauri/src/replay_audio.rs) 及 `PUT /recordings/:id/audio` 的 `audio/ogg` 契約一致，避免雲端多一條轉檔路徑 |
 | D9 | 落檔策略 | 提案 **邊錄邊寫檔**，不學桌機把整場 PCM 常駐記憶體（`RecorderBuf`，16kHz×2B = 115MB/hr）——手機會被 jetsam 殺掉 |
 | D10 | 商業模式 | 待拍板（§9.2）建議 v1 **不在 app 內販售**，只讓已有帳號登入使用免費/既有額度，避開 IAP 抽成與審核風險 |
@@ -66,8 +66,8 @@ iOS 版不是「把桌機塞進手機」。它是補上另一半的會議形態�
    iPhone (Swift)                 Cloud (Worker)                Desktop (Tauri)
  ┌──────────────────┐        ┌─────────────────────┐        ┌────────────────────┐
  │ AVAudioEngine    │        │                     │        │                    │
- │  16k mono i16    │──WS───▶│ /stt/stream (DO)    │        │                    │
- │ SegmentBuilder   │◀──────│  → recognizer       │        │                    │
+ │  16k mono i16    │──WS───▶│ /stt/v2/stream (DO) │        │                    │
+ │ SegmentBuilder   │◀──────│  → 語音辨識         │        │                    │
  │ live findings ───┼──HTTP─▶│ /v1/chat/completions│        │                    │
  │ (45s, 一個 prompt)│        │                     │        │                    │
  │ Opus/Ogg 落檔    │──PUT──▶│ R2 audio (presigned)│        │                    │
@@ -125,7 +125,7 @@ live findings 需要 eval templates 才有判準；scenario/stage bundles 決定
 |---|---|---|
 | `AudioCapture` | AVAudioEngine → 16k mono i16（對齊 `TARGET_SAMPLE_RATE`）；`.record` + `UIBackgroundModes: audio`；中斷/路由變更/鎖屏 | 中 |
 | `Recorder` | 邊錄邊寫檔（D9），結束後編 Opus/Ogg（libopus SPM）符合 `audio/ogg` 契約 | 中——libopus on iOS 要驗證 |
-| `SttRelayClient` | WS → `wss://api.parley.tw/stt/v2/stream`，Bearer session token；協定見 [`stt-protocol.md`](stt-protocol.md)（`start` frame、`{"type":"keepalive"}`、`{"type":"end"}` 收尾後讀到 `done`），桌機實作見 [`parley.rs`](../../src-tauri/src/transcription/parley.rs) | 中 |
+| `ParleyStreamClient` | WS → `wss://api.parley.tw/stt/v2/stream`（Parley 自己的串流協定 v2，見 [`stt-protocol.md`](stt-protocol.md)），Bearer session token；先送 `start` frame；`{"type":"keepalive"}` 每 2s、`{"type":"end"}` 收尾後讀到 `done`；**送出 `end` 後絕不關 socket**（否則最後一句被截斷） | 中 |
 | `SegmentBuilder` | 移植 [`common.rs:242`](../../src-tauri/src/transcription/common.rs:242)：speaker-run 累積、同 id 重發 final、`{source}-tail` 的 partial、`endpoint`/`finalized` frame 驅動 endpoint | **高——最容易出錯，必須有 unit test** |
 | `SpeakerIdentity` | mix 模式下指定「誰是我」（D7） | 低 |
 | `LiveCoach` | 45s 一次打 `/v1/chat/completions`，複用 timeline live prompt + eval schema | 中 |
