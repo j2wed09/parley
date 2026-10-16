@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir, join } from "@tauri-apps/api/path";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -14,6 +12,7 @@ import { LANGUAGE_OPTIONS, useI18n, type TranslationKey } from "../i18n";
 import { broadcastSettings, SETTINGS_NAVIGATE_EVENT } from "../lib/settingsSync";
 import { signInWithGoogle, signOut } from "../lib/cloud/client";
 import { CLOUD_ENABLED } from "../lib/flags";
+import { isProviderListed } from "../lib/providerListing";
 import { Flag } from "../components/ui/flag";
 import { listMyInvitations } from "../lib/cloud/orgs";
 import type { CloudAuth } from "../lib/cloud/types";
@@ -32,6 +31,8 @@ import { LaunchAtLoginField } from "./LaunchAtLoginField";
 import { STT_PROVIDERS, STT_BY_ID, sttLabel } from "../lib/transcription/providers";
 import { useLocalSttModels } from "../lib/transcription/useLocalSttModels";
 import { LocalSttModelPicker } from "../components/LocalSttModelPicker";
+import { SttCredentialField } from "../components/SttCredentialField";
+import type { SttProviderInfo } from "../lib/transcription/registry";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/CopyButton";
 import { Toaster } from "@/components/ui/sonner";
@@ -54,6 +55,14 @@ import {
 } from "../lib/ai/providers";
 import { missingProviderRequirement } from "../lib/ai/settings";
 import { runConnectionTest, type ConnectionTestResult } from "../lib/ai/connectionTest";
+import * as ipc from "../lib/ipc/commands";
+import {
+  DIARIZE_PROGRESS_EVENT,
+  MEETING_STATUS_EVENT,
+  createListenerScope,
+  listenEvent,
+  listenIfTauri,
+} from "../lib/ipc/events";
 
 /** Tailwind classes for each provider tag tone (status tokens adapt to light/dark). */
 const PROVIDER_TAG_TONES: Record<ProviderTagTone, string> = {
@@ -129,25 +138,22 @@ export function SettingsApp() {
   const updateSettings = useStore((s) => s.updateSettings);
   const [cat, setCat] = useState<Category>(() => categoryFromHash() ?? "basic");
   useEffect(() => {
-    if (!isTauri()) return;
-    // Guard the cleanup-beats-listen() race: if unmount wins, detach the
-    // listener the moment the promise resolves instead of leaving it attached.
-    let active = true;
-    let unlisten: (() => void) | undefined;
-    listen<Category>(SETTINGS_NAVIGATE_EVENT, (e) => {
-      if (NAV.some((n) => n.id === e.payload)) setCat(e.payload);
-    }).then((un) => {
-      if (active) unlisten = un;
-      else un();
-    }).catch((error) => log.warn("settings: navigate listener failed", { error: String(error) }));
-    return () => {
-      active = false;
-      unlisten?.();
-    };
+    // The scope guards the cleanup-beats-listen() race: if unmount wins, the
+    // listener is detached the moment it resolves instead of left attached.
+    const listeners = createListenerScope((error) =>
+      log.warn("settings: navigate listener failed", { error: String(error) }),
+    );
+    listeners.track(
+      listenIfTauri<Category>(SETTINGS_NAVIGATE_EVENT, (e) => {
+        if (NAV.some((n) => n.id === e.payload)) setCat(e.payload);
+      }),
+    );
+    return listeners.dispose;
   }, []);
   // Nav search (⑥): label OR translated keywords, so "金鑰"/"key" finds the
   // provider panel and "麥克風"/"mic" finds transcription.
   const cloudAuth = useStore((s) => s.cloudAuth);
+  const listing = { cloudEnabled: CLOUD_ENABLED, signedIn: !!cloudAuth };
   // Signing out while on a signed-in-only panel (or deep-linking to one while
   // signed out) lands on Account, where signing in happens.
   useEffect(() => {
@@ -242,7 +248,7 @@ export function SettingsApp() {
   // Settings open can trip the macOS microphone permission prompt.
   useEffect(() => {
     if (!isTauri() || cat !== "transcription") return;
-    invoke<string[]>("list_input_devices")
+    ipc.listInputDevices()
       .then(setDevices)
       .catch((error) =>
         log.warn("settings: input device list failed", { error: String(error) }),
@@ -254,7 +260,7 @@ export function SettingsApp() {
     getVersion()
       .then(setAppVersion)
       .catch((error) => log.warn("settings: app version lookup failed", { error: String(error) }));
-    invoke<string>("get_templates_path")
+    ipc.getTemplatesPath()
       .then(setTemplatesPath)
       .catch((error) =>
         log.warn("settings: templates path lookup failed", { error: String(error) }),
@@ -264,7 +270,7 @@ export function SettingsApp() {
       .then(setLogPath)
       .catch((error) => log.warn("settings: log path lookup failed", { error: String(error) }));
     const refreshMcpInfo = () => {
-      invoke<McpServerInfo>("get_mcp_server_info")
+      ipc.getMcpServerInfo()
         .then(setMcpInfo)
         .catch((error) =>
           log.warn("settings: MCP server info lookup failed", { error: String(error) }),
@@ -276,7 +282,7 @@ export function SettingsApp() {
     }, 1000);
     return () => {
       globalThis.clearInterval(mcpTimer);
-      invoke("stop_mic_test").catch((error) => log.warn("settings: stop mic test on cleanup failed", { error: String(error) }));
+      ipc.stopMicTest().catch((error) => log.warn("settings: stop mic test on cleanup failed", { error: String(error) }));
     };
   }, [mcpInfo?.running]);
 
@@ -286,7 +292,7 @@ export function SettingsApp() {
     if (!isTauri() || cat !== "mcp") return;
     let alive = true;
     const refresh = () => {
-      invoke<McpActivityInfo>("get_mcp_activity")
+      ipc.getMcpActivity()
         .then((a) => {
           if (alive) setMcpActivity(a);
         })
@@ -305,10 +311,10 @@ export function SettingsApp() {
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
-    invoke<boolean>("meeting_active")
+    ipc.meetingActive()
       .then((a) => alive && setRecording(a))
       .catch((error) => log.warn("settings: meeting status query failed", { error: String(error) }));
-    const un = listen<string>("meeting://status", (e) => {
+    const un = listenEvent(MEETING_STATUS_EVENT, (e) => {
       if (alive) setRecording(e.payload === "recording");
     });
     return () => {
@@ -322,7 +328,7 @@ export function SettingsApp() {
   async function toggleTest() {
     if (recording) return; // the mic belongs to the meeting while recording
     if (testing) {
-      await invoke("stop_mic_test").catch((error) =>
+      await ipc.stopMicTest().catch((error) =>
         log.warn("settings: stop mic test failed", { error: String(error) }),
       );
       setTesting(false);
@@ -333,7 +339,7 @@ export function SettingsApp() {
       // test with the level meter pinned at 0 — the same silent lie a meeting told
       // when the mic was denied or held by another app.
       try {
-        await invoke("start_mic_test", { inputDevice: settings.inputDevice });
+        await ipc.startMicTest({ inputDevice: settings.inputDevice });
         setTesting(true);
       } catch (error) {
         log.warn("settings: start mic test failed", {
@@ -670,7 +676,7 @@ export function SettingsApp() {
                           // The hosted "parley" provider only exists in the cloud build
                           // and only when signed in (auth IS the gate) — hide it in the
                           // OSS edition and when signed out.
-                          (p) => p.id !== "parley" || (CLOUD_ENABLED && !!cloudAuth),
+                          (p) => isProviderListed(p, listing),
                         ).map((p) => (
                           <SelectItem key={p.id} value={p.id}>
                             <span className="flex items-center gap-2">
@@ -722,7 +728,7 @@ export function SettingsApp() {
                   {STT_PROVIDERS.filter(
                     // Hosted "parley" STT only exists in the cloud build and only
                     // when signed in (the session token IS the credential).
-                    (p) => p.id !== "parley" || (CLOUD_ENABLED && !!cloudAuth),
+                    (p) => isProviderListed(p, listing),
                   ).map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       <span className="flex items-center gap-2">
@@ -734,35 +740,32 @@ export function SettingsApp() {
                 </SelectContent>
               </Select>
             </Field>
-            {/* Hosted "parley" authenticates with the cloud session token, not a
-                user-entered key — show whose account it bills to instead. The
-                on-device provider has no key at all: pick (and download) a model. */}
-            {settings.transcriptionProvider === "parley" && (
-              <p className="max-w-md text-[11px] text-muted-foreground">
-                {t("settings.account.useParley.note", { email: cloudAuth?.user.email ?? "" })}
-              </p>
-            )}
-            {settings.transcriptionProvider === "local" && (
-              <Field label={t("localStt.picker.label")}>
-                <LocalSttModelField
-                  value={settings.localSttModel}
-                  chosen={settings.localSttModelChosen}
-                  onChange={(id) => patch({ localSttModel: id, localSttModelChosen: true })}
-                  onAutoSelect={(id) => patch({ localSttModel: id })}
-                />
-              </Field>
-            )}
-            {settings.transcriptionProvider !== "parley" &&
-              settings.transcriptionProvider !== "local" &&
-              sttInfo.apiKeyField && (
-                <SttKeyField
-                  label={t("settings.transcription.apiKey", { provider: sttInfo.label })}
-                  field={sttInfo.apiKeyField}
-                  placeholder={sttInfo.keyPlaceholder}
-                  settings={settings}
-                  patch={patch}
-                />
-              )}
+            {/* A cloud-session provider (hosted "parley") authenticates with the
+                session token, not a user-entered key — show whose account it
+                bills to instead. The on-device provider has no key at all: pick
+                (and download) a model. */}
+            <SttCredentialField
+              info={sttInfo}
+              settings={settings}
+              patch={patch}
+              cloudSessionNote={
+                <p className="max-w-md text-[11px] text-muted-foreground">
+                  {t("settings.account.useParley.note", { email: cloudAuth?.user.email ?? "" })}
+                </p>
+              }
+              localModelPicker={
+                <Field label={t("localStt.picker.label")}>
+                  <LocalSttModelField
+                    value={settings.localSttModel}
+                    chosen={settings.localSttModelChosen}
+                    onChange={(id) => patch({ localSttModel: id, localSttModelChosen: true })}
+                    onAutoSelect={(id) => patch({ localSttModel: id })}
+                  />
+                </Field>
+              }
+              KeyInputWrapper={SttKeyInputField}
+              keyInputClassName="max-w-sm"
+            />
             {!sttInfo.diarization && (
               <p className="max-w-md rounded-md border border-warning-border bg-warning px-3 py-2 text-[11px] leading-relaxed text-warning-foreground">
                 {t("settings.transcription.noDiarizationWarning")}
@@ -780,12 +783,12 @@ export function SettingsApp() {
                     const dev = v === "__default__" ? "" : v;
                     patch({ inputDevice: dev });
                     if (testing) {
-                      await invoke("stop_mic_test").catch((error) =>
+                      await ipc.stopMicTest().catch((error) =>
                         log.warn("settings: stop mic test before device switch failed", {
                           error: String(error),
                         }),
                       );
-                      await invoke("start_mic_test", { inputDevice: dev }).catch((error) =>
+                      await ipc.startMicTest({ inputDevice: dev }).catch((error) =>
                         log.warn("settings: restart mic test after device switch failed", {
                           inputDevice: dev,
                           error: String(error),
@@ -1378,7 +1381,7 @@ function FixedEndpointFields({
   const { t } = useI18n();
   const prov = settings.llmProviders[wl];
   const winfo = PROVIDER_BY_ID[prov];
-  if (prov === "parley") {
+  if (winfo.requiresAccount) {
     // Hosted provider: no key, no model picker — the server forces the real
     // model. Just confirm who the usage bills to.
     return (
@@ -1641,33 +1644,6 @@ function TodoTemplateEditor({
   );
 }
 
-/** BYOK transcription key input for the selected provider's settings field. */
-function SttKeyField({
-  label,
-  field,
-  placeholder,
-  settings,
-  patch,
-}: Readonly<{
-  label: string;
-  field: keyof Settings;
-  placeholder: string;
-  settings: Settings;
-  patch: (p: Partial<Settings>) => void;
-}>) {
-  return (
-    <Field label={label}>
-      <PasswordInput
-        autoComplete="off"
-        placeholder={placeholder}
-        className="max-w-sm"
-        value={settings[field] as string}
-        onChange={(e) => patch({ [field]: e.target.value } as Partial<Settings>)}
-      />
-    </Field>
-  );
-}
-
 /** The on-device model picker, owning its catalog/download state — mounted
  *  only while "local" is the selected provider. */
 function LocalSttModelField({
@@ -1730,7 +1706,7 @@ function DiarizeModelField() {
     if (!isTauri()) return;
     let alive = true;
     let unlisten: (() => void) | undefined;
-    listen<{ stage: string; received: number; total: number }>("diarize://progress", (e) => {
+    listenEvent(DIARIZE_PROGRESS_EVENT, (e) => {
       if (alive && e.payload.stage === "downloading-model" && e.payload.total > 0) {
         setPct(Math.min(100, Math.round((e.payload.received / e.payload.total) * 100)));
       }
@@ -1850,6 +1826,12 @@ function CopyRow({
       />
     </div>
   );
+}
+
+/** Settings › Transcription's labelled frame around a BYOK provider's key input. */
+function SttKeyInputField({ info, children }: Readonly<{ info: SttProviderInfo; children: React.ReactNode }>) {
+  const { t } = useI18n();
+  return <Field label={t("settings.transcription.apiKey", { provider: info.label })}>{children}</Field>;
 }
 
 function Field({ label, children }: Readonly<{ label: string; children: React.ReactNode }>) {

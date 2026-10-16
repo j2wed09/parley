@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { exit } from "@tauri-apps/plugin-process";
 import { TitleBar } from "./components/TitleBar";
 import { AppShell } from "./components/shell/AppShell";
@@ -45,6 +43,7 @@ import { useAnalysisEngine, listenForCacheClear } from "./lib/analysis/engine";
 import { initStudyPipeline } from "./lib/analysis/studyPipeline";
 import { listenForSpeakerCacheClear } from "./lib/speakers/namesCache";
 import { initHistoryPersistSync, listenForRecordingSaved } from "./lib/history/history";
+import { stopBackendMeeting } from "./lib/meeting/controls";
 import { checkForUpdate } from "./lib/update";
 import {
   getPendingInstalledReleaseNotes,
@@ -58,6 +57,7 @@ import { CLOUD_ENABLED } from "./lib/flags";
 import { initVoiceTyping } from "./lib/voiceTyping/host";
 import { preloadZhConverter } from "./lib/zhConvert";
 import { log } from "./lib/log";
+import { createListenerScope, listenEvent } from "./lib/ipc/events";
 
 /**
  * Build the window-resize handler that re-syncs fullscreen state. Extracted to
@@ -177,16 +177,12 @@ const App = () => {
     // on a LATER tick, so a naive `unX.then(fn => fn())` cleanup can fire its
     // unlisten AFTER the re-mount has already re-subscribed — leaving two live
     // handlers for `transcript://segment` / `audio://prosody` (the dev-only
-    // "double" symptom). Guard with an `active` flag: collect each unlisten as it
-    // resolves; if the effect is already torn down by then, unlisten immediately.
-    let active = true;
-    const live: Array<() => void> = [];
-    const track = (p: Promise<() => void>) => {
-      p.then((fn) => {
-        if (active) live.push(fn);
-        else fn();
-      }).catch((error) => log.warn("app: listener registration failed", { error: String(error) }));
-    };
+    // "double" symptom). The listener scope collects each unlisten as it
+    // resolves; if the effect is already torn down by then, it unlistens at once.
+    const listeners = createListenerScope((error) =>
+      log.warn("app: listener registration failed", { error: String(error) }),
+    );
+    const track = listeners.track;
     // Warm the S→T dictionary now: paying its load on the FIRST transcript
     // event delayed the opening caption of every meeting by the parse time.
     preloadZhConverter();
@@ -216,9 +212,7 @@ const App = () => {
     // for the whole session; the other windows just edit the file and broadcast.
     const unDictionarySync = initDictionarySync();
     return () => {
-      active = false;
-      live.forEach((fn) => fn());
-      live.length = 0;
+      listeners.dispose();
       unTemplates();
       unSession();
       unSessionCmds();
@@ -301,9 +295,7 @@ const App = () => {
     let unlisten: (() => void) | undefined;
     const stopIfRecording = (): Promise<void> => {
       if (!isMeetingActive(useStore.getState().meetingStatus)) return Promise.resolve();
-      return invoke<void>("stop_meeting").catch((error) =>
-        log.warn("meeting: stop on close failed", { error: String(error) }),
-      );
+      return stopBackendMeeting("meeting: stop on close failed");
     };
     // Swallow the promise: a `beforeunload` handler that returns anything
     // non-null asks the webview for a "leave site?" confirmation, which would
@@ -341,7 +333,7 @@ const App = () => {
     // The tray's Quit item (Windows): Rust asks, and the exit runs here so an
     // active meeting is stopped first — the same chain close-to-quit uses.
     let unlistenQuit: (() => void) | undefined;
-    listen(TRAY_QUIT_EVENT, () => exitOnClose(stopIfRecording))
+    listenEvent(TRAY_QUIT_EVENT, () => exitOnClose(stopIfRecording))
       .then((fn) => {
         if (active) {
           unlistenQuit = fn;

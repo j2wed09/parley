@@ -19,16 +19,12 @@
 //! it instead of delivering it, for an Undo that copies it to the clipboard.
 //! The rules are in cancel.ts; the orderings are here.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { isMac } from "../platform";
 import { TRAY_VOICE_TOGGLE_EVENT } from "../tray";
 import { isTauri } from "../tauriEvents";
 import { useStore } from "../store";
-import { sttApiKey, sttModel, sttRelayUrl } from "../transcription/providers";
-import { checkLocalModelReady } from "../transcription/localModels";
-import { languageHintsFromSettings } from "../transcription/languageHints";
+import { prepareTranscription } from "../transcription/prepare";
 import { HOSTED_VOICE_TYPING_MAX_SECONDS } from "../limits";
 import { log } from "../log";
 import { normalizeTranscriptText } from "../textNormalize";
@@ -46,8 +42,6 @@ import {
   SessionDrains,
   SessionOwner,
   SessionTranscript,
-  type Segment,
-  type SessionEvent,
 } from "./transcript";
 import { settleVerdict, type SettleReason } from "./settle";
 import { appendVoiceEntry, type PolishedStyle } from "./history";
@@ -87,6 +81,19 @@ import {
   type CorrectionCandidatePayload,
   type SuggestActionPayload,
 } from "./suggestEvents";
+import * as ipc from "../ipc/commands";
+import {
+  STT_CLOSED_EVENT,
+  STT_CONNECTED_EVENT,
+  TRANSCRIPT_SEGMENT_EVENT,
+  VOICE_TYPING_ERROR_EVENT,
+  VOICE_TYPING_PTT_EVENT,
+  VOICE_TYPING_SESSION_EVENT,
+  createListenerScope,
+  emitEvent,
+  listenEvent,
+  type UnlistenFn,
+} from "../ipc/events";
 
 /** localStorage flag: the boot-time Accessibility prompt has been shown once
  *  for this install (see initVoiceTyping — later launches must not re-nag). */
@@ -236,16 +243,13 @@ export function initVoiceTyping(): () => void {
   // listen() resolves asynchronously — a cleanup that runs before it resolves
   // (StrictMode's dev double-mount of App) must still unlisten the late
   // arrival, or the second init's handlers double up for the app's lifetime.
-  let cancelled = false;
-  const unsubs: UnlistenFn[] = [];
-  const track = (p: Promise<UnlistenFn>) => {
-    p.then((u) => {
-      if (cancelled) u();
-      else unsubs.push(u);
-    }).catch((error) => log.warn("voice-typing: listener setup failed", { error: String(error) }));
-  };
+  // The listener scope does exactly that.
+  const listeners = createListenerScope((error) =>
+    log.warn("voice-typing: listener setup failed", { error: String(error) }),
+  );
+  const track = listeners.track;
   track(
-    listen<{ down: boolean }>("voicetyping://ptt", (e) => {
+    listenEvent(VOICE_TYPING_PTT_EVENT, (e) => {
       const isDown = e.payload.down;
       onPttChain("push-to-talk handler", () => onPtt(isDown), { isDown });
     }),
@@ -253,16 +257,16 @@ export function initVoiceTyping(): () => void {
   // The Windows tray's "Start/Stop voice typing" item (see src-tauri/src/tray.rs).
   // Queued on the same chain as the hotkey, and served by the same session
   // start/end code — only the trigger differs.
-  track(listen(TRAY_VOICE_TOGGLE_EVENT, () => onPttChain("tray toggle", onTrayToggle)));
+  track(listenEvent(TRAY_VOICE_TOGGLE_EVENT, () => onPttChain("tray toggle", onTrayToggle)));
   // Esc while a dictation is cancellable. Rust only holds the Esc shortcut
   // while the host arms it (see armCancel), so an Esc at any other time still
   // reaches the app in front.
   track(
-    listen<CancelPayload>(CANCEL_EVENT, (e) => onEscape(e.payload?.fromTrigger === true)),
+    listenEvent<CancelPayload>(CANCEL_EVENT, (e) => onEscape(e.payload?.fromTrigger === true)),
   );
   // The overlay's Undo.
   track(
-    listen<CancelActionPayload>(CANCEL_ACTION_EVENT, (e) => {
+    listenEvent<CancelActionPayload>(CANCEL_ACTION_EVENT, (e) => {
       if (e.payload.action !== "undo") return;
       onUndoCancel().catch((error) =>
         log.error("voice-typing: cancel undo failed", { error: String(error) }),
@@ -271,7 +275,7 @@ export function initVoiceTyping(): () => void {
   );
   // The Copy on an inserted dictation's confirmation.
   track(
-    listen<DoneActionPayload>(DONE_ACTION_EVENT, (e) => {
+    listenEvent<DoneActionPayload>(DONE_ACTION_EVENT, (e) => {
       if (e.payload.action !== "copy") return;
       onCopyAction().catch((error) =>
         log.error("voice-typing: copy action failed", { error: String(error) }),
@@ -282,7 +286,7 @@ export function initVoiceTyping(): () => void {
   // dictation is open: once it settles, the instance its delivery reads is
   // final, and a straggler must not change the text being pasted.
   track(
-    listen<Segment>("transcript://segment", (e) => {
+    listenEvent(TRANSCRIPT_SEGMENT_EVENT, (e) => {
       if (drains.accept(e.payload)) return;
       if (!busy || !owner.owns(e.payload)) return;
       if (!transcript.accept(e.payload)) return;
@@ -292,7 +296,7 @@ export function initVoiceTyping(): () => void {
     }),
   );
   track(
-    listen<SessionEvent>("voicetyping://session", (e) => {
+    listenEvent(VOICE_TYPING_SESSION_EVENT, (e) => {
       if (e.payload.phase !== "start") return;
       owner.start(e.payload.session);
       transcript = new SessionTranscript();
@@ -307,7 +311,7 @@ export function initVoiceTyping(): () => void {
   // explanation. The mic stays claimed until release; endSession still stops
   // it, and the delivery still pastes whatever text arrived before the death.
   track(
-    listen<{ code: string; session: number | null }>("voicetyping://error", (e) => {
+    listenEvent(VOICE_TYPING_ERROR_EVENT, (e) => {
       // A restarted dictation's session failed while it finished its flush:
       // what it had is final, and the new dictation's overlay is not its.
       if (drains.close(e.payload.session)) {
@@ -320,7 +324,7 @@ export function initVoiceTyping(): () => void {
       // A cancelled dictation keeps its Undo on screen: the failure only means
       // the text it holds is final.
       if (!cancels.isCancelled(gen)) {
-        emit("voicetyping://session", { phase: "error", message: e.payload.code }).catch(
+        emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "error", message: e.payload.code }).catch(
           (error) => log.warn("voice-typing: error event emit failed", { error: String(error) }),
         );
       }
@@ -340,8 +344,8 @@ export function initVoiceTyping(): () => void {
   // the wait for the final answer can start counting (settle.ts). A short tap
   // is often released before this — the hosted relay takes seconds to accept.
   track(
-    listen<{ source: string; session: number | null; acksFinalize?: boolean }>(
-      "stt://connected",
+    listenEvent(
+      STT_CONNECTED_EVENT,
       (e) => {
         if (!busy || !owner.owns(e.payload)) return;
         connectedAt = Date.now();
@@ -351,7 +355,7 @@ export function initVoiceTyping(): () => void {
     ),
   );
   track(
-    listen<{ source: string; session: number | null }>("stt://closed", (e) => {
+    listenEvent(STT_CLOSED_EVENT, (e) => {
       if (drains.close(e.payload.session)) return;
       if (!busy || !owner.owns(e.payload)) return;
       closedAt = Date.now();
@@ -362,7 +366,7 @@ export function initVoiceTyping(): () => void {
   // (registers the combo, or arms the HID tap / keyboard hook for a modifier
   // key). The
   // Settings panel re-applies it whenever the user changes the selection.
-  invoke("set_voice_typing_shortcut", {
+  ipc.setVoiceTypingShortcut({
     shortcut: useStore.getState().settings.voiceTypingShortcut,
   }).catch((error) =>
     log.warn("voice-typing: startup shortcut apply failed", { error: String(error) }),
@@ -385,13 +389,13 @@ export function initVoiceTyping(): () => void {
   // a Windows paste IS refused it is UIPI blocking injection into an elevated
   // window, which no prompt can fix; the overlay says so at delivery instead.
   if (isMac() && useStore.getState().settings.voiceTypingEnabled) {
-    invoke<boolean>("accessibility_status", { prompt: false })
+    ipc.accessibilityStatus({ prompt: false })
       .then((trusted) => {
         if (trusted) return;
         log.warn("voice-typing: Accessibility not granted; auto-paste falls back to clipboard");
         if (localStorage.getItem(AX_BOOT_PROMPTED_KEY)) return;
         localStorage.setItem(AX_BOOT_PROMPTED_KEY, "1");
-        return invoke("accessibility_status", { prompt: true }).then(() => {});
+        return ipc.accessibilityStatus({ prompt: true }).then(() => {});
       })
       .catch((error) =>
         log.warn("voice-typing: startup Accessibility check failed", { error: String(error) }),
@@ -405,13 +409,12 @@ export function initVoiceTyping(): () => void {
     log.warn("voice-typing: overlay prewarm failed", { error: String(error) }),
   );
   return () => {
-    cancelled = true;
     clearTimeout(capTimer);
     clearTimeout(cancelTimer);
     armCancel(false);
     cancelSuggestion();
     stopObserving();
-    unsubs.forEach((u) => u());
+    listeners.dispose();
   };
 }
 
@@ -487,6 +490,41 @@ async function onTrayToggle() {
   down = busy; // clear if the start didn't actually take
 }
 
+/**
+ * A press during the previous dictation's settle window. Swallowing it (the
+ * old behavior) left the user talking into nothing — instead hand the pending
+ * dictation over now and fall through to a fresh session. Its delivery is
+ * queued, not awaited: the mic only opens after this, and a polish round trip
+ * in front of it would cost the start of the next utterance. Synchronous on
+ * purpose (see the start gate in startSession).
+ *
+ * A released session is not killed by the next start (Rust lets it finish its
+ * flush under its own id, which the new overlay ignores), so its delivery first
+ * waits for the recognizer's final answer, at most RESTART_DRAIN_MAX_MS; until
+ * then its segments keep landing in its own transcript. Aborting it used to
+ * lose whatever it had not flushed — the end of the previous dictation. The log
+ * records reason "restart".
+ */
+function handOffSettlingDictation() {
+  const settling = owner.session;
+  const stillFlushing = releasedAt > 0 && closedAt === 0 && !failed;
+  const d = settleNow("restart");
+  if (!d) return;
+  if (settling !== null && stillFlushing) d.drain = drains.add(settling, d.t);
+  // Never rejects: the delivery chain catches and logs its own failures.
+  enqueueDelivery(d);
+}
+
+/** The start gate refused: log why and show the code on the overlay, which
+ *  maps it to its message (lib/transcription/errors.ts). */
+async function reportStartRefused(code: string, localModel: string) {
+  if (code === "no-key") log.warn("voice-typing: no STT API key configured");
+  else log.warn("voice-typing: local model not ready", { model: localModel });
+  await showOverlay();
+  await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "error", message: code });
+  scheduleHide();
+}
+
 async function startSession() {
   const pressed = Date.now();
   // The recognition bias below is read synchronously from the dictionary
@@ -499,47 +537,21 @@ async function startSession() {
   // overlay is about to be reused for this session, and a stale ⌥↩ must not
   // silently learn a correction the user has moved on from.
   cancelSuggestion();
-  if (busy) {
-    // A press during the previous dictation's settle window. Swallowing it
-    // (the old behavior) left the user talking into nothing — instead hand the
-    // pending dictation over now and fall through to a fresh session. Its
-    // delivery is queued, not awaited: the mic only opens below, and a polish
-    // round trip in front of it would cost the start of the next utterance.
-    // A released session is not killed by the next start (Rust lets it finish
-    // its flush under its own id, which the new overlay ignores), so its
-    // delivery first waits for the recognizer's final answer, at most
-    // RESTART_DRAIN_MAX_MS; until then its segments keep landing in its own
-    // transcript. Aborting it used to lose whatever it had not flushed — the
-    // end of the previous dictation. The log records reason "restart".
-    const settling = owner.session;
-    const stillFlushing = releasedAt > 0 && closedAt === 0 && !failed;
-    const d = settleNow("restart");
-    if (d) {
-      if (settling !== null && stillFlushing) d.drain = drains.add(settling, d.t);
-      void enqueueDelivery(d);
-    }
-  }
+  if (busy) handOffSettlingDictation();
   const { settings } = useStore.getState();
   if (!settings.voiceTypingEnabled) return;
-  const provider = settings.transcriptionProvider;
-  const apiKey = sttApiKey(settings, provider);
-  if (!apiKey.trim()) {
-    log.warn("voice-typing: no STT API key configured");
-    await showOverlay();
-    await emit("voicetyping://session", { phase: "error", message: "no-key" });
-    scheduleHide();
+  // The shared start gate. It answers synchronously unless an on-device model
+  // has to be checked (one local IPC round trip, before the mic opens) — and
+  // only then is it awaited, so a BYOK or hosted start stays free of an await
+  // between the restart hand-off above and the state reset below.
+  const gate = prepareTranscription("voiceTyping", settings);
+  const prepared = gate instanceof Promise ? await gate : gate;
+  if (!prepared.ok) {
+    await reportStartRefused(prepared.code, settings.localSttModel);
     return;
   }
-  // On-device STT passes the key gate with its sentinel; the real
-  // precondition is a downloaded model. One local IPC round trip, before the
-  // mic opens.
-  if (provider === "local" && !(await checkLocalModelReady(settings.localSttModel))) {
-    log.warn("voice-typing: local model not ready", { model: settings.localSttModel });
-    await showOverlay();
-    await emit("voicetyping://session", { phase: "error", message: "no-local-model" });
-    scheduleHide();
-    return;
-  }
+  const { request } = prepared;
+  const { provider } = request;
   // A new dictation replaces a cancelled one still offering Undo (its text is
   // dropped; one whose Undo was already clicked is still recovered).
   dropCancel();
@@ -564,7 +576,7 @@ async function startSession() {
   // the cap to the backend as a safety net (a hung webview can't stream the
   // paid relay forever) and mirror it with a frontend timer that ends the
   // dictation gracefully (delivering the transcript). null = no cap for BYOK.
-  const hosted = provider === "parley";
+  const hosted = request.info.requiresAccount;
   // MIC FIRST, overlay second. Placing the overlay costs four round-trips to
   // the app's main thread (cursor position → monitor list → setPosition →
   // present), and the capture used to wait behind all of them — so roughly the
@@ -572,17 +584,17 @@ async function startSession() {
   // work elsewhere in the app stretched that window arbitrarily. The overlay
   // webview is prewarmed and already subscribed, so Rust's `start` event can
   // reset it before its window is on screen and it simply catches up.
-  const starting = invoke("start_voice_typing", {
+  const starting = ipc.startVoiceTyping({
     provider,
-    apiKey,
-    languageHints: languageHintsFromSettings(settings),
+    apiKey: request.apiKey,
+    languageHints: request.languageHints,
     // Recognition bias: the user's own name and company (Settings › Basic),
     // then the phrase dictionary — the terms they've taught us are exactly the
     // ones the model keeps getting wrong.
-    vocabulary: recognitionTerms(settings),
+    vocabulary: request.vocabulary,
     inputDevice: settings.inputDevice ?? null,
-    relayUrl: sttRelayUrl(provider, "voice_typing"),
-    model: sttModel(settings, provider),
+    relayUrl: request.relayUrl,
+    model: request.model,
     maxDurationSecs: hosted ? HOSTED_VOICE_TYPING_MAX_SECONDS : null,
   });
   // Esc cancels from here on — claimed right behind the mic, never before it.
@@ -615,7 +627,7 @@ async function startSession() {
     // before the error is announced — it raced the start, and a message sent
     // to a window that never appeared is a silent dead session.
     await shown;
-    await emit("voicetyping://session", { phase: "error", message: String(e) });
+    await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "error", message: String(e) });
     scheduleHide();
   }
 }
@@ -638,7 +650,7 @@ async function endSession() {
   if (!busy || gen !== myGen || cancels.isCancelled(myGen)) return;
   // A failed session already shows its error, and a closed one is about to
   // be delivered: neither gets the "finalizing" spinner.
-  if (!failed && closedAt === 0) await emit("voicetyping://session", { phase: "stop" });
+  if (!failed && closedAt === 0) await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "stop" });
   waitForSettle();
 }
 
@@ -657,7 +669,7 @@ async function onCapReached() {
   await stopCapture({ tail: false });
   if (!busy || gen !== myGen || cancels.isCancelled(myGen)) return;
   if (!failed) {
-    await emit("voicetyping://session", { phase: "limit" }).catch((error) =>
+    await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "limit" }).catch((error) =>
       log.warn("voice-typing: limit event emit failed", { error: String(error) }),
     );
   }
@@ -674,7 +686,7 @@ async function onCapReached() {
 async function stopCapture(opts: { tail: boolean }): Promise<void> {
   capturing = false;
   try {
-    await invoke("stop_voice_typing", { tail: opts.tail });
+    await ipc.stopVoiceTyping({ tail: opts.tail });
   } catch (e) {
     log.warn("voice-typing: stop failed", { tail: opts.tail, error: String(e) });
   }
@@ -797,7 +809,7 @@ async function polishForPaste(
   // for the "done" tail). A cancelled dictation's overlay is its Undo, which
   // only that Undo bringing it back may replace.
   if (gen === myGen && (recovering || !cancels.isCancelled(myGen))) {
-    await emit("voicetyping://session", { phase: "polishing" });
+    await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "polishing" });
   }
   const { text, outcome } = await polishTranscriptOutcome({
     raw,
@@ -899,7 +911,7 @@ async function deliverSettled(d: Delivery): Promise<void> {
       // paste into the frontmost app through the clipboard, then puts the
       // user's own clipboard back; when it cannot paste, it leaves the text
       // on the clipboard instead.
-      const r = await invoke<{ pasted: boolean; appBundleId: string | null }>("insert_text", {
+      const r = await ipc.insertText({
         text,
       });
       appBundleId = r.appBundleId;
@@ -943,7 +955,7 @@ async function deliverSettled(d: Delivery): Promise<void> {
   // to "done" or hide it. The text above was still delivered (it predates the
   // new session).
   if (gen !== d.myGen) return;
-  await emit("voicetyping://session", {
+  await emitEvent(VOICE_TYPING_SESSION_EVENT, {
     phase: "done",
     message: doneMessage({ text, pasted, outcome }),
     text,
@@ -966,7 +978,7 @@ function scheduleHide() {
  *  awaited — arming must not hold up a press — and Rust ignores a repeat of
  *  the current state, so no mirror of it is kept here. */
 function armCancel(armed: boolean): void {
-  invoke("set_voice_typing_cancel_armed", { armed }).catch((error) =>
+  ipc.setVoiceTypingCancelArmed({ armed }).catch((error) =>
     log.warn("voice-typing: escape cancel arming failed", { armed, error: String(error) }),
   );
 }
@@ -1029,7 +1041,7 @@ async function applyCancel(g: number): Promise<void> {
   clearTimeout(hideTimer);
   clearTimeout(cancelTimer);
   cancelTimer = setTimeout(expireCancel, CANCEL_UNDO_MS);
-  await emit("voicetyping://session", { phase: "cancelled" });
+  await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "cancelled" });
   if (capturing) {
     // A release with no tail, whether or not the dictation has settled
     // meanwhile (a server close can do that with the mic still open). The
@@ -1059,7 +1071,7 @@ async function holdCancelled(
   } else if (verdict === "hold" && gen === g) {
     // Put the Undo back on screen in case a "polishing" sent just before the
     // Esc reached the overlay after the "cancelled" that followed it.
-    await emit("voicetyping://session", { phase: "cancelled" });
+    await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "cancelled" });
   }
 }
 
@@ -1072,7 +1084,7 @@ async function onUndoCancel(): Promise<void> {
   log.info("voice-typing: cancel undone", { settled: r.kind === "now" });
   if (r.kind === "wait") {
     // The "finalizing" spinner until it settles.
-    if (gen === r.gen) await emit("voicetyping://session", { phase: "stop" });
+    if (gen === r.gen) await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "stop" });
     return;
   }
   await enqueueRecovery(r.gen, r.text, r.polished, r.gateText);
@@ -1119,7 +1131,7 @@ async function deliverRecovered(
   }
   if (out) {
     try {
-      await invoke("copy_to_clipboard", { text: out });
+      await ipc.copyToClipboard({ text: out });
     } catch (e) {
       log.error("voice-typing: recovered copy failed", { error: String(e) });
     }
@@ -1129,7 +1141,7 @@ async function deliverRecovered(
     log.info("voice-typing: recovered to clipboard", { chars: out.length });
   }
   if (gen !== g) return;
-  await emit("voicetyping://session", {
+  await emitEvent(VOICE_TYPING_SESSION_EVENT, {
     phase: "done",
     message: recoveredMessage({ text: out, outcome }),
     text: out,
@@ -1172,7 +1184,7 @@ async function onCopyAction(): Promise<void> {
   const last = lastInserted;
   if (!last || last.gen !== gen) return;
   try {
-    await invoke("copy_to_clipboard", { text: last.text });
+    await ipc.copyToClipboard({ text: last.text });
   } catch (e) {
     log.error("voice-typing: copy failed", { error: String(e) });
     return;
@@ -1181,7 +1193,7 @@ async function onCopyAction(): Promise<void> {
   // The overlay may have moved on while the copy ran: a new dictation, or the
   // dictionary's question (which keeps the overlay up on its own clock).
   if (gen !== last.gen || suggestion || suggestTimer !== undefined) return;
-  await emit("voicetyping://session", { phase: "done", message: "copied", text: last.text });
+  await emitEvent(VOICE_TYPING_SESSION_EVENT, { phase: "done", message: "copied", text: last.text });
   // A fresh dwell, so the confirmation can be read; the overlay restarts its
   // fade on the new verdict to match.
   scheduleHide();
@@ -1217,7 +1229,7 @@ async function armObservation(): Promise<void> {
   if (!observation || gen !== observation.sessionGen) return;
   let started = false;
   try {
-    started = await invoke<boolean>("observe_pasted_field", {
+    started = await ipc.observePastedField({
       insertedText: observation.insertedText,
     });
   } catch (e) {
@@ -1231,7 +1243,7 @@ async function armObservation(): Promise<void> {
     return;
   }
   if (gen !== observation.sessionGen) return;
-  const un = await listen<CorrectionCandidatePayload>(CORRECTION_CANDIDATE_EVENT, (e) => {
+  const un = await listenEvent<CorrectionCandidatePayload>(CORRECTION_CANDIDATE_EVENT, (e) => {
     stopObserving(); // one candidate per observation, then we're done listening
     onCorrectionCandidate(e.payload).catch((error) =>
       log.warn("voice-typing: correction candidate failed", { error: String(error) }),
@@ -1299,11 +1311,11 @@ async function showSuggestion(hit: { from: string; to: string }): Promise<void> 
   clearTimeout(hideTimer);
   suggestion = hit;
   lastAdd = null;
-  suggestActionUnlisten = await listen<SuggestActionPayload>(SUGGEST_ACTION_EVENT, (e) =>
+  suggestActionUnlisten = await listenEvent<SuggestActionPayload>(SUGGEST_ACTION_EVENT, (e) =>
     onSuggestAction(e.payload.action),
   );
   await showOverlay();
-  await emit(SUGGEST_EVENT, hit);
+  await emitEvent(SUGGEST_EVENT, hit);
   await register(SUGGEST_SHORTCUT, (event) => {
     if (event.state === "Pressed") onSuggestAction("add");
   })
@@ -1350,7 +1362,7 @@ function acceptSuggestion(): void {
   clearTimeout(suggestTimer);
   // ⌥↩ has done its job; the undo is a click.
   void unregisterSuggestShortcut();
-  emit(SUGGEST_STATE_EVENT, { state: "added" }).catch((error) =>
+  emitEvent(SUGGEST_STATE_EVENT, { state: "added" }).catch((error) =>
     log.warn("voice-typing: suggest added emit failed", { error: String(error) }),
   );
   suggestTimer = setTimeout(() => {
@@ -1363,7 +1375,7 @@ function acceptSuggestion(): void {
 /** Take the bubble away and put the overlay back to sleep. */
 async function hideSuggestion(): Promise<void> {
   cancelSuggestion();
-  await emit(SUGGEST_STATE_EVENT, { state: "hidden" }).catch((error) =>
+  await emitEvent(SUGGEST_STATE_EVENT, { state: "hidden" }).catch((error) =>
     log.warn("voice-typing: suggest hidden emit failed", { error: String(error) }),
   );
   await hideOverlay();
