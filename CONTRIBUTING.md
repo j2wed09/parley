@@ -45,3 +45,38 @@ We don't pay bounties, per-fix donations, or pay-on-merge arrangements, and we w
 ## Local Development
 
 See the setup instructions in the main [README.md](README.md).
+
+### Native build prerequisites
+
+On-device transcription (the "Local" provider) compiles [whisper.cpp](https://github.com/ggml-org/whisper.cpp) from source through the `whisper-rs` crate, so the Rust build needs:
+
+- **CMake** (3.5 or newer) on `PATH` — `brew install cmake` on macOS; on Windows, the CMake bundled with Visual Studio or `winget install Kitware.CMake`.
+- **libclang**, used by `bindgen` to generate the whisper.cpp bindings — Xcode's Command Line Tools provide it on macOS; on Windows install LLVM (`winget install LLVM.LLVM`) and, if it is not found automatically, set `LIBCLANG_PATH` to its `bin` directory.
+- **Windows only: the LunarG Vulkan SDK.** On Windows whisper.cpp is built with ggml's Vulkan backend (GPU decoding on NVIDIA, AMD and Intel GPUs). Install the SDK from <https://vulkan.lunarg.com/sdk/home#windows> (or `winget install KhronosGroup.VulkanSDK`) and open a new terminal: the build needs `VULKAN_SDK` set (whisper-rs-sys refuses to build without it) and `glslc` from `%VULKAN_SDK%\Bin`, which ggml uses to compile its shaders. CI pins the version in `.github/actions/setup-vulkan-sdk/action.yml`. macOS uses Metal and needs no SDK.
+- **Windows only: build whisper.cpp with Ninja, from a short path.** Under the default Visual Studio generator, ggml's nested `vulkan-shaders-gen` project writes files past Windows' 260-character path limit and fails with "No CMAKE_C_COMPILER could be found" ([ggml-org/whisper.cpp#3973](https://github.com/ggml-org/whisper.cpp/issues/3973)). Work from a **Developer PowerShell for VS** (so `cl.exe` is on `PATH`), install Ninja (`winget install Ninja-build.Ninja`), and set:
+
+  ```powershell
+  $env:CMAKE_GENERATOR = "Ninja"
+  $env:CARGO_BUILD_BUILD_DIR = "C:\b"   # any short directory
+  ```
+
+  CI does the same (`.github/workflows/ci.yml`, `rust-windows`). Run cargo from PowerShell rather than Git Bash: Git Bash's `/usr/bin/link` shadows MSVC's `link.exe`.
+
+The first build compiles whisper.cpp and takes a few extra minutes (on Windows longer: the Vulkan backend compiles a few hundred shaders); later builds reuse it. Release builds set `GGML_NATIVE=OFF` so the CPU code is not tuned to the build machine (a binary built with `-march=native` on a CI runner can crash on users' CPUs).
+
+Users do **not** need the Vulkan SDK: `vulkan-1.dll` comes with their GPU driver. The app links it with `/DELAYLOAD:vulkan-1.dll` (see `src-tauri/build.rs`), so it still starts on a PC without one, and `src-tauri/src/vulkan_delayload.rs` keeps whisper.cpp on the CPU there instead of crashing on the first model load. If you touch either file, or bump whisper-rs, run the check CI runs on Windows:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --example vulkan_delayload_check --target x86_64-pc-windows-msvc
+PARLEY_FORCE_NO_VULKAN_LOADER=1 cargo run --manifest-path src-tauri/Cargo.toml --example vulkan_delayload_check --target x86_64-pc-windows-msvc
+```
+
+The second run forces the "no Vulkan driver" path (debug builds only).
+
+Models are not bundled: the app downloads them on demand into `<app data>/models/stt/`. To exercise the recognizer without the app, point the ignored smoke test at a GGML model and an audio file:
+
+```bash
+cd src-tauri
+PARLEY_LOCAL_STT_MODEL=/path/to/ggml-small-q5_1.bin PARLEY_LOCAL_STT_AUDIO=/path/to/clip.wav \
+  cargo test --release --lib smoke_transcribe -- --ignored --nocapture
+```

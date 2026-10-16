@@ -5,8 +5,10 @@ mod cache;
 mod capture;
 mod commands;
 mod diarize;
+mod hardware;
 mod history;
 mod hotkey;
+mod local_stt;
 mod mcp;
 mod menu;
 mod permissions;
@@ -17,6 +19,10 @@ mod transcription;
 mod tray;
 mod usage;
 mod voice_typing;
+// Delay-load hooks for vulkan-1.dll; build.rs links them in under the same
+// condition (Windows, MSVC, not 32-bit x86).
+#[cfg(all(target_os = "windows", target_env = "msvc", not(target_arch = "x86")))]
+mod vulkan_delayload;
 
 use tauri::Manager;
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
@@ -249,6 +255,11 @@ pub fn run() {
             playback::prepare_playback_fallback,
             diarize::download_diarize_model,
             diarize::diarize_model_status,
+            local_stt::local_stt_models,
+            local_stt::local_stt_download,
+            local_stt::local_stt_cancel,
+            local_stt::local_stt_delete,
+            local_stt::local_stt_hardware,
             mcp::get_mcp_server_info,
             mcp::get_mcp_activity,
             cache::clear_cache,

@@ -92,7 +92,31 @@ jobs:
   rust-windows:
     name: Rust (Windows)
     runs-on: windows-latest
-    timeout-minutes: 60
+    # whisper.cpp's Vulkan backend compiles a few hundred compute shaders.
+    timeout-minutes: 90
+    env:
+      # Same as release.yml: never tune whisper.cpp to the runner's CPU.
+      GGML_NATIVE: "OFF"
+      # Same as release.yml: keep Cargo's intermediate artifacts (build-script
+      # OUT_DIRs) on a short path. ggml builds its `vulkan-shaders-gen` host
+      # tool as a nested CMake project (ExternalProject) seven directories
+      # below whisper-rs-sys's OUT_DIR. Under
+      # D:\a\parley\parley\src-tauri\target\<triple>\debug\build\<pkg>-<hash>
+      # that project's compiler checks write files 265-277 characters long,
+      # past MAX_PATH, which cl.exe's PDB writer and MSBuild's file tracker do
+      # not support, so the nested configure fails with "No CMAKE_C_COMPILER
+      # could be found" (ggml-org/whisper.cpp#3973). C:\b saves 29
+      # characters. Final binaries stay in src-tauri/target; only the
+      # intermediates move (stable `build.build-dir`, Cargo 1.91+).
+      CARGO_BUILD_BUILD_DIR: 'C:\b'
+      # Build whisper.cpp with Ninja instead of the Visual Studio generator.
+      # Under the VS generator, ggml's nested vulkan-shaders-gen project still
+      # writes MSBuild FileTracker logs past MAX_PATH even below C:\b (261
+      # characters in CI, 263 in release: FTK1011), and turning the tracker off
+      # breaks the custom-build scripts instead. Ninja has no tracker logs, and
+      # the nested ExternalProject inherits the generator. Needs cl.exe on PATH
+      # (the MSVC dev environment step below).
+      CMAKE_GENERATOR: Ninja
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -103,10 +127,38 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: clippy
 
+      - name: Point bindgen at libclang (whisper-rs)
+        # whisper-rs-sys generates its bindings with bindgen, which needs
+        # libclang. The Windows image ships LLVM; pin the path so a changed
+        # search order cannot silently fall back to stale bundled bindings.
+        shell: bash
+        run: |
+          if [ -f "C:/Program Files/LLVM/bin/libclang.dll" ]; then
+            echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+          else
+            echo "::warning::LLVM not found at C:/Program Files/LLVM; bindgen will search on its own"
+          fi
+
+      - name: MSVC developer environment (cl.exe for whisper.cpp's Ninja build)
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Ninja
+        shell: bash
+        run: ninja --version || choco install ninja --no-progress -y
+
+      - name: Set up the Vulkan SDK (whisper.cpp GPU backend)
+        # The Windows build enables whisper-rs `vulkan`; whisper-rs-sys panics
+        # without VULKAN_SDK, and ggml needs glslc for its shaders.
+        uses: ./.github/actions/setup-vulkan-sdk
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          # Dependency artifacts live in the build dir now, not in target/.
+          cache-directories: ${{ env.CARGO_BUILD_BUILD_DIR }}
 
       - name: Provide placeholder build inputs
         # Same stand-ins as the macOS job, for the Windows resource list in
@@ -127,3 +179,35 @@ jobs:
       # the kind of thing nobody would otherwise see.
       - name: Clippy (deny warnings)
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      # Clippy never links, so it cannot see the one Windows-only risk of the
+      # Vulkan backend: vulkan-1.dll is delay-loaded (build.rs) and a PC
+      # without it must still run whisper.cpp on the CPU (vulkan_delayload.rs).
+      # This links a small binary with the same linker arguments as the app and
+      # builds ggml's backend registry — where ggml first calls into the DLL —
+      # once with whatever this runner has and once with the loader forced
+      # missing. A delay-load exception escaping ggml crashes the step.
+      - name: Delay-loaded Vulkan loader (present and missing)
+        # pwsh, not bash: Git Bash puts coreutils' /usr/bin/link ahead of the
+        # MSVC link.exe that the developer environment step added to PATH.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo run --manifest-path src-tauri/Cargo.toml --example vulkan_delayload_check --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "vulkan_delayload_check failed ($LASTEXITCODE)" }
+          $env:PARLEY_FORCE_NO_VULKAN_LOADER = '1'
+          cargo run --manifest-path src-tauri/Cargo.toml --example vulkan_delayload_check --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "vulkan_delayload_check (no loader) failed ($LASTEXITCODE)" }
+
+      # MSBuild only says "compiler identification is unknown" when a nested
+      # CMake configure fails; the reason is in its configure log.
+      - name: Show whisper.cpp's CMake configure logs (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          find "$(cygpath -u "$CARGO_BUILD_BUILD_DIR")" -path '*whisper-rs-sys-*' -name CMakeConfigureLog.yaml 2>/dev/null |
+            while read -r log; do
+              echo "::group::$log"
+              tail -n 200 "$log"
+              echo "::endgroup::"
+            done
