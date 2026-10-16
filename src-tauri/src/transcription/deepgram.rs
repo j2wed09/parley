@@ -8,9 +8,13 @@ use tauri::AppHandle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::tungstenite::Message;
 
+use super::batch::{
+    group_words, guess_audio_mime, last_end, read_json, BatchRequest, BatchWord,
+    TranscriptionResult,
+};
 use super::common::{
     clean_vocabulary, connect_with_headers, drive_session, note_connected, urlencode, LevelMeter,
-    SegmentBuilder, Timeline, TranscribeConfig, LEVEL_EVENT, TRANSCRIPT_EVENT,
+    SegmentBuilder, Timeline, TranscribeConfig, LEVEL_EVENT,
 };
 use super::ws::{self, Next, OnClose, Pump, WsRead, WsWrite};
 use crate::audio::resample::pcm_to_le_bytes;
@@ -179,21 +183,120 @@ async fn read_transcripts(
     timeline: Timeline,
     read: WsRead,
 ) -> Result<()> {
-    let mut builder = SegmentBuilder::new(app, source, TRANSCRIPT_EVENT, timeline);
+    let mut builder = SegmentBuilder::to_frontend(app, source, timeline);
     ws::read_frames(
         "deepgram",
         source,
         read,
         OnClose::FailIfAbnormal,
-        |payload| {
-            match serde_json::from_str::<DgResponse>(payload) {
-                Ok(resp) => apply_response(&mut builder, resp),
-                Err(e) => eprintln!("[deepgram:{source}] parse error: {e}"),
-            }
-            Ok(Next::Continue)
-        },
+        |payload| on_payload(&mut builder, source, payload),
     )
     .await
+}
+
+/// Fold one server payload into `builder`. Deepgram has no in-band errors,
+/// so every payload continues the stream; an unparseable one is skipped.
+fn on_payload(builder: &mut SegmentBuilder, source: &str, payload: &str) -> Result<Next> {
+    match serde_json::from_str::<DgResponse>(payload) {
+        Ok(resp) => apply_response(builder, resp),
+        Err(e) => eprintln!("[deepgram:{source}] parse error: {e}"),
+    }
+    Ok(Next::Continue)
+}
+
+// --- Batch (pre-recorded) ------------------------------------------------------
+
+const DEEPGRAM_BATCH_BASE: &str = "https://api.deepgram.com";
+/// The pre-recorded path pins its model.
+const BATCH_MODEL: &str = "nova-3";
+
+#[derive(Deserialize, Default)]
+struct BatchResponse {
+    #[serde(default)]
+    metadata: BatchMeta,
+    #[serde(default)]
+    results: BatchResults,
+}
+#[derive(Deserialize, Default)]
+struct BatchMeta {
+    #[serde(default)]
+    duration: f64,
+}
+#[derive(Deserialize, Default)]
+struct BatchResults {
+    #[serde(default)]
+    channels: Vec<BatchChannel>,
+}
+#[derive(Deserialize, Default)]
+struct BatchChannel {
+    #[serde(default)]
+    alternatives: Vec<BatchAlternative>,
+}
+#[derive(Deserialize, Default)]
+struct BatchAlternative {
+    #[serde(default)]
+    words: Vec<DgWord>,
+}
+
+/// The pre-recorded `/v1/listen` URL: the pinned model, diarization, the
+/// language (or auto-detection) and the custom vocabulary.
+fn batch_url(
+    base: &str,
+    language_hints: &[String],
+    diarization: bool,
+    vocabulary: &[String],
+) -> String {
+    let mut url = format!(
+        "{base}/v1/listen?model={BATCH_MODEL}&smart_format=true&punctuate=true&diarize={diarization}"
+    );
+    // One language hint pins the language; otherwise let Deepgram auto-detect.
+    match language_hints.first() {
+        Some(lang) => url.push_str(&format!("&language={lang}")),
+        None => url.push_str("&detect_language=true"),
+    }
+    // Same keyterm/keywords split as the realtime adapter, keyed off the model
+    // this path pins.
+    url.push_str(&vocabulary_params(BATCH_MODEL, vocabulary));
+    url
+}
+
+/// Deepgram pre-recorded API: POST the raw (compressed) bytes to /v1/listen and
+/// group the returned diarized word stream. Shape verified vs docs, not live-tested.
+pub(crate) async fn transcribe_file(req: BatchRequest<'_>) -> Result<TranscriptionResult, String> {
+    let url = batch_url(
+        req.base_or(DEEPGRAM_BATCH_BASE),
+        req.language_hints,
+        req.diarization,
+        req.vocabulary,
+    );
+    let resp = req
+        .client
+        .post(url)
+        .header("Authorization", format!("Token {}", req.credential))
+        .header("Content-Type", guess_audio_mime(req.upload_path))
+        .body(req.audio)
+        .send()
+        .await
+        .map_err(|e| format!("Deepgram request failed: {e}"))?;
+    let dg: BatchResponse = read_json(resp, "deepgram transcribe").await?;
+    let words: Vec<BatchWord> = dg
+        .results
+        .channels
+        .first()
+        .and_then(|c| c.alternatives.first())
+        .map(|a| a.words.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .map(|w| BatchWord {
+            speaker: w.speaker,
+            text: w.punctuated_word.clone().unwrap_or_else(|| w.word.clone()),
+            start_ms: (w.start * 1000.0) as u64,
+            end_ms: (w.end * 1000.0) as u64,
+        })
+        .collect();
+    let segments = group_words(&words);
+    let duration_ms = ((dg.metadata.duration * 1000.0) as u64).max(last_end(&segments));
+    Ok(TranscriptionResult::fresh(segments, duration_ms))
 }
 
 pub async fn run_session(
@@ -235,6 +338,50 @@ pub async fn run_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcription::common::testing::{builder, rows, seg};
+
+    #[test]
+    fn results_become_runs_interims_become_the_tail() {
+        let (mut b, out) = builder("me");
+        for payload in [
+            r#"{"type":"Results","is_final":false,"channel":{"alternatives":[
+                {"transcript":"hello wor","words":[{"word":"hello","start":0.125,"end":0.5,"speaker":0}]}
+            ]}}"#,
+            r#"{"type":"Results","is_final":true,"speech_final":false,"channel":{"alternatives":[
+                {"transcript":"Hello world.","words":[
+                    {"word":"hello","punctuated_word":"Hello","start":0.125,"end":0.5,"speaker":0},
+                    {"word":"world","punctuated_word":"world.","start":0.5,"end":1.0,"speaker":0}
+                ]}
+            ]}}"#,
+            r#"{"type":"Results","is_final":true,"speech_final":true,"channel":{"alternatives":[
+                {"transcript":"Hi","words":[{"word":"hi","punctuated_word":"Hi","start":1.25,"end":1.5,"speaker":1}]}
+            ]}}"#,
+            r#"{"type":"Metadata","request_id":"x"}"#,
+            r#"{"type":"Results","is_final":false,"channel":{"alternatives":[{"transcript":"  "}]}}"#,
+            "not json",
+            r#"{"type":"Results","is_final":false,"channel":{"alternatives":[{"transcript":"so"}]}}"#,
+        ] {
+            assert!(matches!(
+                on_payload(&mut b, "me", payload).unwrap(),
+                Next::Continue
+            ));
+        }
+        assert_eq!(
+            rows(&out),
+            vec![
+                seg("me-tail", 0, "hello wor", false, 125, 125),
+                seg("me-0", 0, "Hello world. ", true, 125, 1000),
+                seg("me-tail", 0, "", false, 1000, 1000),
+                // The speaker change commits run 0; speech_final commits run 1.
+                seg("me-0", 0, "Hello world. ", true, 125, 1000),
+                seg("me-1", 1, "Hi ", true, 1250, 1500),
+                seg("me-1", 1, "Hi ", true, 1250, 1500),
+                seg("me-tail", 0, "", false, 1500, 1500),
+                // A word-less interim keeps the builder's speaker and end.
+                seg("me-tail", 0, "so", false, 1500, 1500),
+            ]
+        );
+    }
 
     #[test]
     fn nova_3_gets_keyterm_and_older_models_get_keywords() {

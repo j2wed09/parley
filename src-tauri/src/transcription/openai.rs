@@ -14,9 +14,12 @@ use tauri::AppHandle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::tungstenite::Message;
 
+use super::batch::{
+    guess_audio_mime, last_end, read_json, BatchRequest, ReplaySegment, TranscriptionResult,
+};
 use super::common::{
     clean_vocabulary, connect_with_headers, drive_session, note_connected, LevelMeter,
-    SegmentBuilder, Timeline, TranscribeConfig, LEVEL_EVENT, TRANSCRIPT_EVENT,
+    SegmentBuilder, Timeline, TranscribeConfig, LEVEL_EVENT,
 };
 use super::ws::{self, Next, OnClose, Pump, WsRead, WsWrite};
 use crate::audio::resample::pcm_to_le_bytes;
@@ -136,18 +139,119 @@ async fn read_transcripts(
     timeline: Timeline,
     read: WsRead,
 ) -> Result<()> {
-    let mut builder = SegmentBuilder::new(app, source, TRANSCRIPT_EVENT, timeline);
+    let mut builder = SegmentBuilder::to_frontend(app, source, timeline);
     let mut interim = String::new();
     ws::read_frames("openai", source, read, OnClose::Stop, |payload| {
-        let Ok(ev) = serde_json::from_str::<OaiEvent>(payload) else {
-            return Ok(Next::Continue);
-        };
-        match apply_event(&mut builder, &mut interim, ev, source, payload) {
-            Some(err) => Err(err),
-            None => Ok(Next::Continue),
-        }
+        on_payload(&mut builder, &mut interim, source, payload)
     })
     .await
+}
+
+/// Fold one server payload into `builder`, growing `interim` with the deltas;
+/// an `error` event ends the session and an unparseable payload is skipped.
+fn on_payload(
+    builder: &mut SegmentBuilder,
+    interim: &mut String,
+    source: &str,
+    payload: &str,
+) -> Result<Next> {
+    let Ok(ev) = serde_json::from_str::<OaiEvent>(payload) else {
+        return Ok(Next::Continue);
+    };
+    match apply_event(builder, interim, ev, source, payload) {
+        Some(err) => Err(err),
+        None => Ok(Next::Continue),
+    }
+}
+
+// --- Batch (/v1/audio/transcriptions) ------------------------------------------
+
+const OPENAI_BATCH_BASE: &str = "https://api.openai.com";
+
+#[derive(Deserialize, Default)]
+struct OaiVerbose {
+    #[serde(default)]
+    duration: f64,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    segments: Vec<OaiSegment>,
+}
+#[derive(Deserialize, Default)]
+struct OaiSegment {
+    #[serde(default)]
+    start: f64,
+    #[serde(default)]
+    end: f64,
+    #[serde(default)]
+    text: String,
+}
+
+/// OpenAI transcription with `verbose_json` for segment timestamps (whisper-1 —
+/// the gpt-4o transcribe models reject verbose_json). No diarization → a single
+/// speaker. 25 MB request limit (compression helps). Shape verified vs docs.
+pub(crate) async fn transcribe_file(req: BatchRequest<'_>) -> Result<TranscriptionResult, String> {
+    let base = req.base_or(OPENAI_BATCH_BASE);
+    let file_name = req.file_name_or("recording.ogg");
+    let part = reqwest::multipart::Part::bytes(req.audio)
+        .file_name(file_name)
+        .mime_str(guess_audio_mime(req.upload_path))
+        .map_err(|e| format!("openai: bad mime: {e}"))?;
+    // whisper-1 returns verbose_json segments with timestamps; the gpt-4o
+    // transcribe models don't, so default to whisper-1 for the replay path.
+    let model = req.model.unwrap_or("whisper-1");
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("model", model.to_string())
+        .text("response_format", "verbose_json");
+    if let Some(lang) = req.language_hints.first() {
+        form = form.text("language", lang.clone());
+    }
+    // Whisper's only biasing hook is the free-text `prompt`; a comma-separated
+    // term list is the documented way to steer spelling. Same string the
+    // realtime adapter puts in `input_audio_transcription.prompt`.
+    let terms = clean_vocabulary(req.vocabulary);
+    if !terms.is_empty() {
+        form = form.text("prompt", terms.join(", "));
+    }
+    let resp = req
+        .client
+        .post(format!("{base}/v1/audio/transcriptions"))
+        .bearer_auth(req.credential)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("OpenAI request failed: {e}"))?;
+    let v: OaiVerbose = read_json(resp, "openai transcribe").await?;
+    Ok(verbose_result(v))
+}
+
+/// Map the verbose segments; fall back to the flat text as one segment.
+fn verbose_result(v: OaiVerbose) -> TranscriptionResult {
+    let mut segments: Vec<ReplaySegment> = v
+        .segments
+        .into_iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .enumerate()
+        .map(|(i, s)| ReplaySegment {
+            id: format!("them-{i}"),
+            speaker: 0,
+            text: s.text.trim().to_string(),
+            start_ms: (s.start * 1000.0) as u64,
+            end_ms: (s.end * 1000.0) as u64,
+        })
+        .collect();
+    if segments.is_empty() && !v.text.trim().is_empty() {
+        segments.push(ReplaySegment {
+            id: "them-0".to_string(),
+            speaker: 0,
+            text: v.text.trim().to_string(),
+            start_ms: 0,
+            end_ms: (v.duration * 1000.0) as u64,
+        });
+    }
+    let duration_ms = ((v.duration * 1000.0) as u64).max(last_end(&segments));
+    TranscriptionResult::fresh(segments, duration_ms)
 }
 
 pub async fn run_session(
@@ -187,4 +291,91 @@ pub async fn run_session(
         read_transcripts(app, source, config.timeline(), read),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transcription::common::testing::{builder, rows, seg};
+
+    #[test]
+    fn deltas_grow_the_tail_and_completion_commits_it() {
+        let (mut b, out) = builder("voice-typing");
+        let mut interim = String::new();
+        for payload in [
+            r#"{"type":"transcription_session.created"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.delta","delta":"Hel"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.delta","delta":"lo"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":" Hello. "}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.delta","delta":"again"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":""}"#,
+            "not json",
+        ] {
+            assert!(matches!(
+                on_payload(&mut b, &mut interim, "voice-typing", payload).unwrap(),
+                Next::Continue
+            ));
+        }
+        assert_eq!(
+            rows(&out),
+            vec![
+                seg("voice-typing-tail", 0, "Hel", false, 0, 0),
+                seg("voice-typing-tail", 0, "Hello", false, 0, 0),
+                seg("voice-typing-0", 0, "Hello.", true, 0, 0),
+                seg("voice-typing-0", 0, "Hello.", true, 0, 0),
+                seg("voice-typing-tail", 0, "", false, 0, 0),
+                seg("voice-typing-tail", 0, "again", false, 0, 0),
+                // An empty completion commits what the deltas built.
+                seg("voice-typing-1", 0, "again", true, 0, 0),
+                seg("voice-typing-1", 0, "again", true, 0, 0),
+                seg("voice-typing-tail", 0, "", false, 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_error_event_ends_the_session_with_its_message() {
+        let (mut b, _) = builder("me");
+        let mut interim = String::new();
+        let err = on_payload(
+            &mut b,
+            &mut interim,
+            "me",
+            r#"{"type":"error","error":{"message":"Incorrect API key provided"}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "Incorrect API key provided");
+        let err = on_payload(&mut b, &mut interim, "me", r#"{"type":"error"}"#).unwrap_err();
+        assert_eq!(err.to_string(), "server error");
+    }
+
+    #[test]
+    fn the_setup_frame_carries_the_language_and_prompt() {
+        let config = TranscribeConfig {
+            api_key: String::new(),
+            model: String::new(),
+            language_hints: vec!["zh".into()],
+            diarization: false,
+            vocabulary: vec!["Parley".into(), " 派斯 ".into()],
+            relay_endpoint: None,
+            leg: 0,
+            time_offset_ms: 0,
+            level_events: true,
+        };
+        assert_eq!(
+            setup_frame(&config, "gpt-4o-transcribe"),
+            json!({
+                "type": "transcription_session.update",
+                "session": {
+                    "input_audio_format": "pcm16",
+                    "input_audio_transcription": {
+                        "model": "gpt-4o-transcribe",
+                        "language": "zh",
+                        "prompt": "Parley, 派斯",
+                    },
+                    "turn_detection": { "type": "server_vad", "silence_duration_ms": 500 }
+                }
+            })
+        );
+    }
 }

@@ -26,15 +26,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use tauri::AppHandle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState};
 
 use super::common::{
     clean_vocabulary, note_connected, LevelMeter, SegmentBuilder, TranscribeConfig, LEVEL_EVENT,
-    TRANSCRIPT_EVENT,
 };
+use super::error::SttError;
 use crate::audio::TARGET_SAMPLE_RATE;
 use crate::local_stt::{self, ModelFamily, ModelLease};
 
@@ -766,8 +766,8 @@ async fn load(app: &AppHandle, model_id: &str) -> Result<(Arc<WhisperContext>, l
     let id = model_id.to_string();
     tauri::async_runtime::spawn_blocking(move || local_stt::load_context(&app, &id))
         .await
-        .map_err(|e| anyhow!("Local transcription model load panicked: {e}"))?
-        .map_err(|e| anyhow!(e))
+        .map_err(|e| SttError::local(format!("Local transcription model load panicked: {e}")))?
+        .map_err(SttError::local)
 }
 
 /// Emits decode results and tracks the tentative tail.
@@ -808,7 +808,7 @@ impl Emitter {
             }
             // Already a final "Local transcription …" message (see
             // local_stt::init_failure_message), memory-specific when it fits.
-            JobResult::Fatal(msg) => return Err(anyhow!(msg)),
+            JobResult::Fatal(msg) => return Err(SttError::local(msg)),
         }
         Ok(())
     }
@@ -875,8 +875,11 @@ pub async fn run_session(
     mut pcm_rx: UnboundedReceiver<Vec<i16>>,
 ) -> Result<()> {
     let model_id = local_stt::resolve_model_id(&config.model).to_string();
-    let entry = local_stt::entry(&model_id)
-        .ok_or_else(|| anyhow!("Local transcription model '{model_id}' is unknown."))?;
+    let entry = local_stt::entry(&model_id).ok_or_else(|| {
+        SttError::local(format!(
+            "Local transcription model '{model_id}' is unknown."
+        ))
+    })?;
     let _lease = ModelLease::new(&model_id);
     let started = Instant::now();
     let (ctx, accel) = load(&app, &model_id).await?;
@@ -895,7 +898,7 @@ pub async fn run_session(
 
     let mut meter = LevelMeter::new(app.clone(), source, LEVEL_EVENT).enabled(config.level_events);
     let mut emitter = Emitter {
-        builder: SegmentBuilder::new(app.clone(), source, TRANSCRIPT_EVENT, config.timeline()),
+        builder: SegmentBuilder::to_frontend(app.clone(), source, config.timeline()),
         tail_for: None,
     };
     let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
@@ -1061,6 +1064,46 @@ fn transcribe_samples(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_results_become_runs_and_a_tail_for_the_open_utterance() {
+        use crate::transcription::common::testing::{builder, rows, seg};
+        let (builder, out) = builder("me");
+        let mut emitter = Emitter {
+            builder,
+            tail_for: None,
+        };
+        let interim = |id: u64, text: &str| JobResult::Interim {
+            id,
+            text: text.to_string(),
+        };
+        emitter.apply(interim(1, "hel"), Some((1, 200))).unwrap();
+        // Not the open utterance (its final is next in the queue): dropped.
+        emitter.apply(interim(2, "stale"), Some((1, 200))).unwrap();
+        emitter.apply(interim(1, "x"), None).unwrap();
+        let final_result = |id: u64, text: &str| JobResult::Final {
+            id,
+            start_ms: 200,
+            end_ms: 900,
+            text: text.to_string(),
+        };
+        emitter.apply(final_result(1, " hello"), None).unwrap();
+        emitter.apply(final_result(2, ""), None).unwrap();
+        assert_eq!(
+            rows(&out),
+            vec![
+                seg("me-tail", 0, "hel", false, 200, 200),
+                seg("me-0", 0, " hello", true, 200, 900),
+                seg("me-0", 0, " hello", true, 200, 900),
+                seg("me-tail", 0, "", false, 0, 0),
+            ]
+        );
+        let fatal = JobResult::Fatal("Local transcription model 'm' failed to load: x".into());
+        assert_eq!(
+            emitter.apply(fatal, None).unwrap_err().to_string(),
+            "Local transcription model 'm' failed to load: x"
+        );
+    }
 
     const SR: usize = TARGET_SAMPLE_RATE as usize;
 
