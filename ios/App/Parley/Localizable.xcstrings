@@ -581,23 +581,6 @@
         }
       }
     },
-    "After you dictate, the microphone stays ready so the next dictation starts where you are typing. iOS shows the orange dot meanwhile, but nothing is recorded until you tap the mic." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "After you dictate, the microphone stays ready so the next dictation starts where you are typing. iOS shows the orange dot meanwhile, but nothing is recorded until you tap the mic."
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "聽寫後麥克風會保留一段時間，下次可以直接在原本的 App 聽寫。這段時間會亮橘點，但在你按下麥克風前不會錄音。"
-          }
-        }
-      }
-    },
     "All" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2640,23 +2623,6 @@
         }
       }
     },
-    "Keeping the microphone ready" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Keeping the microphone ready"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "讓麥克風保持待命"
-          }
-        }
-      }
-    },
     "Kept on this phone only, for 30 days, up to 200 entries." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3839,23 +3805,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "一個客戶一個資料夾。"
-          }
-        }
-      }
-    },
-    "Only the app version, device model, and where it crashed. Never your recordings or transcripts." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Only the app version, device model, and where it crashed. Never your recordings or transcripts."
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "只傳 App 版本、裝置型號與當機位置，不含錄音或逐字稿。"
           }
         }
       }
@@ -7074,6 +7023,23 @@
         }
       }
     },
+    "The orange dot stays on while it's ready, but nothing is recorded until you tap the mic." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The orange dot stays on while it's ready, but nothing is recorded until you tap the mic."
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待命時會一直亮橘點，但在你按下麥克風前不會錄音。"
+          }
+        }
+      }
+    },
     "The recording, its transcript and its summary are deleted everywhere. This cannot be undone." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7719,19 +7685,19 @@
         }
       }
     },
-    "Voice typing history is off. Turn it on in Settings › Voice typing history." : {
+    "Voice typing history is off. Turn it on in Settings › Voice typing." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Voice typing history is off. Turn it on in Settings › Voice typing history."
+            "value" : "Voice typing history is off. Turn it on in Settings › Voice typing."
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "語音輸入紀錄已關閉。可到「設定 › 語音輸入紀錄」開啟。"
+            "value" : "語音輸入紀錄已關閉。可到「設定 › 語音輸入」開啟。"
           }
         }
       }
@@ -8140,23 +8106,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "帳號尚未刪除。請確認網路後再試一次。"
-          }
-        }
-      }
-    },
-    "Your name, phone numbers, addresses and ID numbers, one tap away on the Parley keyboard. They stay on this phone." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Your name, phone numbers, addresses and ID numbers, one tap away on the Parley keyboard. They stay on this phone."
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "姓名、電話、地址和證號，在 Parley 鍵盤上點一下就能輸入。資料只存在這支手機上。"
           }
         }
       }
