@@ -1,9 +1,8 @@
 import type { TodoItem } from "../types";
 
-/** Alias. The response `model` field is the version that actually answered
- *  (jev-1.14.0 as of October 2026). Thresholds tuned against one version
- *  should pin that version instead of the alias. */
-export const JEV_MODEL = "jev-latest";
+/** Pinned version. `jev-latest` moves when TypeSafe ships a release, and the
+ *  done/partial thresholds were tuned on this one. Settings can override it. */
+export const JEV_MODEL = "jev-1.14.0";
 
 /** Jev scores one question against the state. Every checklist item uses this
  *  same yes-polarity wording; only the item text changes. Jev is sensitive to
@@ -13,6 +12,10 @@ export const JEV_QUESTION_PREFIX = "Has this agenda item already been covered in
 const PER_QUESTION_TOKENS = 32_000;
 const PER_REQUEST_TOKENS = 64_000;
 const CHARS_PER_TOKEN = 4;
+/** Subtracted before the char estimate. Four characters per token runs close
+ *  to the real count, so a few hundred tokens of spare is not enough: a full
+ *  budget was landing about 1.8k tokens under the 32k per-question limit. */
+export const TOKEN_HEADROOM = 8_000;
 
 export interface JevNoulQuestion {
   type: "noul";
@@ -20,7 +23,7 @@ export interface JevNoulQuestion {
 }
 
 export interface JevRequest {
-  model: typeof JEV_MODEL;
+  model: string;
   state: string;
   questions: Record<string, JevNoulQuestion>;
 }
@@ -30,6 +33,14 @@ export interface JevStateInput {
   context?: string;
   transcript: string;
   items: Pick<TodoItem, "id" | "text">[];
+}
+
+export interface JevRequestOptions {
+  /** Overrides {@link JEV_MODEL}. Blank falls back to the pin. */
+  model?: string;
+  /** Char cap for the whole `state`, including the header. The retry after a
+   *  token-limit 400 passes a smaller cap than {@link maxStateChars}. */
+  stateChars?: number;
 }
 
 /** The question sent for one checklist item. Same shape every time. */
@@ -42,13 +53,19 @@ export function jevInstructions(item: string): string {
   );
 }
 
+export function jevModelId(configured?: string): string {
+  const trimmed = configured?.trim();
+  return trimmed || JEV_MODEL;
+}
+
 /**
  * One System One request: the meeting so far as `state`, one noul question
  * per still-open item. Returns null when there is nothing to score (no items,
  * or no transcript). Trims the oldest transcript lines so the state stays
- * inside Jev's 32k-tokens-per-question and 64k-tokens-per-request limits.
+ * inside Jev's 32k-tokens-per-question and 64k-tokens-per-request limits,
+ * with {@link TOKEN_HEADROOM} held back from the 4-chars-per-token estimate.
  */
-export function buildJevRequest(input: JevStateInput): JevRequest | null {
+export function buildJevRequest(input: JevStateInput, options?: JevRequestOptions): JevRequest | null {
   const items = input.items.filter((item) => item.id && item.text.trim());
   const transcript = input.transcript.trim();
   if (items.length === 0 || !transcript) return null;
@@ -59,9 +76,16 @@ export function buildJevRequest(input: JevStateInput): JevRequest | null {
   }
 
   const header = stateHeader(input.title ?? "", input.context ?? "");
-  const budget = maxStateChars(Object.values(questions)) - header.length;
+  const cap = options?.stateChars ?? maxStateChars(Object.values(questions));
+  const budget = cap - header.length;
   const body = trimTranscript(transcript, Math.max(0, budget));
-  return { model: JEV_MODEL, state: `${header}${body}`, questions };
+  return { model: jevModelId(options?.model), state: `${header}${body}`, questions };
+}
+
+/** A 400 whose body says the request did not fit Jev's context window. */
+export function isJevTokenLimit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b400\b/.test(message) && /max_tokens_exceeded/i.test(message);
 }
 
 /** Pull `answers[<id>].noul` out of a System One response. */
@@ -91,13 +115,15 @@ function stateHeader(title: string, context: string): string {
   return `${parts.join("\n\n")}\n`;
 }
 
-/** Char budget for `state`, given the questions that ride along with it. */
+/** Char budget for `state`, given the questions that ride along with it.
+ *  {@link TOKEN_HEADROOM} is held back on both the per-question and the
+ *  per-request limit before the 4-chars-per-token estimate is applied. */
 export function maxStateChars(questions: readonly { instructions: string }[]): number {
   const questionTokens = questions.map((q) => Math.ceil((q.instructions.length + 48) / CHARS_PER_TOKEN));
   const largest = Math.max(...questionTokens, 1);
   const sum = questionTokens.reduce((total, n) => total + n, 0);
-  const perQuestion = PER_QUESTION_TOKENS - largest - 256;
-  const perRequest = PER_REQUEST_TOKENS - sum - 256;
+  const perQuestion = PER_QUESTION_TOKENS - largest - TOKEN_HEADROOM;
+  const perRequest = PER_REQUEST_TOKENS - sum - TOKEN_HEADROOM;
   return Math.max(1_000, Math.min(perQuestion, perRequest)) * CHARS_PER_TOKEN;
 }
 

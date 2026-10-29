@@ -80,6 +80,33 @@ describe("runChecklistCheck", () => {
     expect(useStore.getState().todos[0].locked).toBeUndefined();
   });
 
+  it("retries a token-limit 400 once with a shorter transcript", async () => {
+    const long = Array.from({ length: 4_000 }, (_, i) => `line ${i} ${"word ".repeat(30)}`).join("\n");
+    useStore.getState().applyTodoTemplate(["Confirm the budget"]);
+    useStore.setState({ segments: [seg({ text: long })] });
+    ipc.classifyWithJev
+      .mockRejectedValueOnce(new Error('TypeSafe returned 400: {"detail":"max_tokens_exceeded"}'))
+      .mockImplementation(async (args: { request: { state: string; questions: Record<string, unknown> } }) => {
+        const id = Object.keys(args.request.questions)[0];
+        return { model: "jev-1.14.0", answers: { [id]: { type: "noul", noul: 0.2 } }, usage: {} };
+      });
+
+    await runChecklistCheck();
+    expect(ipc.classifyWithJev).toHaveBeenCalledTimes(2);
+    const first = ipc.classifyWithJev.mock.calls[0][0].request.state as string;
+    const second = ipc.classifyWithJev.mock.calls[1][0].request.state as string;
+    expect(second.length).toBeLessThan(first.length);
+    expect(ipc.classifyWithJev.mock.calls[0][0].request.model).toBe("jev-1.14.0");
+  });
+
+  it("does not retry a Jev failure that is not a token limit", async () => {
+    useStore.getState().applyTodoTemplate(["Confirm the budget"]);
+    useStore.setState({ segments: [seg({ text: "Budget is settled." })] });
+    ipc.classifyWithJev.mockRejectedValueOnce(new Error("TypeSafe returned 500: unavailable"));
+    await expect(runChecklistCheck()).rejects.toThrow(/500/);
+    expect(ipc.classifyWithJev).toHaveBeenCalledTimes(1);
+  });
+
   it("skips the LLM fallback when no provider key is configured", async () => {
     useStore.getState().applyTodoTemplate(["Confirm the budget"]);
     useStore.getState().updateSettings({ todoChecker: "llm", groqApiKey: "" });

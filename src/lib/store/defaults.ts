@@ -10,6 +10,7 @@ import { DEFAULT_MODELS } from "../ai/providers";
 import { DEFAULT_LOCAL_STT_MODEL } from "../transcription/localModels";
 import { FALLBACK_STT_PROVIDER } from "../transcription/registry";
 import { DEFAULT_JEV_DONE_THRESHOLD, DEFAULT_JEV_PARTIAL_THRESHOLD } from "../checklist/thresholds";
+import { JEV_MODEL } from "../checklist/jev";
 
 /** A translate function bound to a language, for resolving built-in templates. */
 export const tFor = (language: AppLanguage) => (key: TranslationKey) => translate(language, key);
@@ -102,6 +103,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // configured LLM from Settings → To-dos.
   checklistGenerator: "claude-cli",
   todoChecker: "jev",
+  jevModel: JEV_MODEL,
   jevDoneThreshold: DEFAULT_JEV_DONE_THRESHOLD,
   jevPartialThreshold: DEFAULT_JEV_PARTIAL_THRESHOLD,
   jevRequireConsecutive: true,

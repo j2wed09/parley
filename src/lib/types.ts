@@ -419,11 +419,15 @@ export interface Settings {
   /** Live check-off. `jev` calls TypeSafe from the Rust side; `llm` is the
    *  older provider prompt. */
   todoChecker: TodoChecker;
+  /** Jev model id. Defaults to the pinned `jev-1.14.0`. `jev-latest` is
+   *  accepted here, but the thresholds were tuned on the pin. */
+  jevModel: string;
   /** Jev probability at or above this checks an item off (after a second high
-   *  read when {@link jevRequireConsecutive} is on). */
+   *  read, on a newer transcript, when {@link jevRequireConsecutive} is on).
+   *  Tuned to 0.85 on jev-1.14.0. */
   jevDoneThreshold: number;
   /** Jev probability at or above this, and below the done line, marks an item
-   *  partly covered. */
+   *  partly covered. Tuned to 0.25 on jev-1.14.0. */
   jevPartialThreshold: number;
   /** Require two high Jev reads in a row before checking an item off. */
   jevRequireConsecutive: boolean;

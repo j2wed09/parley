@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useStore, isTrimmed, hasSpokenSegment, meetingBriefText } from "../store";
 import { hasProviderKey } from "../ai/settings";
+import { checklistScoreDue } from "../checklist/schedule";
 import { analyzeTimeline } from "../ai/timeline";
 import { detectMeetingKind } from "../ai/meetingKind";
 import { analysisSignature, lensOf } from "./lens";
@@ -375,26 +376,37 @@ export function useAnalysisEngine() {
         void runAnalysis({ mode: "live" });
       }
 
-      // Check the agenda off while recording. Jev runs about every 15s, and
-      // also shortly after new final speech. The LLM fallback stays on the
-      // slower 45s cadence. The manual button on the checklist runs the same
-      // pass on demand. Items the user locked are left alone inside the pass.
+      // Check the agenda off while recording. Jev scores only when new final
+      // speech has arrived, and not more often than every 15s, so two highs
+      // in a row are two different transcripts. The LLM fallback stays on a
+      // 45s wall clock. The manual button runs a pass on demand. Items the
+      // user locked are left alone inside the pass.
       const finalEnd = segments.reduce((max, segment) => (segment.isFinal ? Math.max(max, segment.endMs) : max), 0);
       const jev = settings.todoChecker !== "llm";
-      const todoInterval = jev ? 15_000 : 45_000;
-      const freshSpeech = jev && finalEnd > lastTodoEndMs.current && now >= lastRun.current.todos + 5_000;
       const checkerReady = jev || hasProviderKey(settings, "realtime");
       if (
-        (now >= lastRun.current.todos + todoInterval || freshSpeech) &&
+        checklistScoreDue({
+          checker: jev ? "jev" : "llm",
+          now,
+          lastRunAt: lastRun.current.todos,
+          finalEndMs: finalEnd,
+          lastScoredEndMs: lastTodoEndMs.current,
+        }) &&
         !todoBusy.current &&
         checkerReady &&
         todos.some((t) => !t.done && !t.locked && t.text.trim())
       ) {
         lastRun.current.todos = now;
-        lastTodoEndMs.current = finalEnd;
+        const scoredThrough = finalEnd;
         todoBusy.current = true;
         import("../checklist/run")
           .then(({ runChecklistCheck }) => runChecklistCheck())
+          .then(() => {
+            // A failed call leaves the watermark, so the same speech is tried
+            // again after the interval. A finished call, even one that changed
+            // nothing, will not be scored again until newer final speech.
+            if (jev) lastTodoEndMs.current = scoredThrough;
+          })
           .catch((e) => console.error("[todos]", e))
           .finally(() => {
             todoBusy.current = false;

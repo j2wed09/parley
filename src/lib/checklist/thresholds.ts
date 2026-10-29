@@ -1,8 +1,12 @@
-/** Defaults for the Jev check-off. Tuned as a starting point; the smoke-test
- *  script prints real probabilities so these can be moved later. */
+/** Defaults for the Jev check-off, tuned on jev-1.14.0.
+ *
+ *  Genuinely covered items scored 0.89–0.99. A passing one-line mention
+ *  scored 0.30–0.77 and must not check the item off. Not-covered items
+ *  stayed at or below 0.12. Run-to-run variance was about ±0.02.
+ */
 
-export const DEFAULT_JEV_DONE_THRESHOLD = 0.75;
-export const DEFAULT_JEV_PARTIAL_THRESHOLD = 0.4;
+export const DEFAULT_JEV_DONE_THRESHOLD = 0.85;
+export const DEFAULT_JEV_PARTIAL_THRESHOLD = 0.25;
 
 export interface CoverageThresholds {
   doneThreshold: number;

@@ -3,6 +3,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { ChecklistGenerator, TodoChecker, TodoTemplate } from "../../lib/types";
+import { JEV_MODEL } from "../../lib/checklist/jev";
 import { useI18n } from "../../i18n";
 import { isTauri } from "../../lib/tauriEvents";
 import * as ipc from "../../lib/ipc/commands";
@@ -44,6 +45,16 @@ export function TodosCategory({ settings, patch }: Readonly<SettingsPanelProps>)
           <option value="llm">{t("settings.todos.checker.llm")}</option>
         </select>
         <p className="max-w-sm text-[11px] text-muted-foreground">{t("settings.todos.checker.help")}</p>
+      </Field>
+      <Field label={t("settings.todos.model")}>
+        <Input
+          value={settings.jevModel}
+          onChange={(event) => patch({ jevModel: event.target.value })}
+          onBlur={(event) => patch({ jevModel: event.target.value.trim() || JEV_MODEL })}
+          className="h-8 max-w-sm font-mono text-xs"
+          spellCheck={false}
+        />
+        <p className="max-w-sm text-[11px] text-muted-foreground">{t("settings.todos.model.help")}</p>
       </Field>
       <TypesafeKeyField />
       <div className="flex flex-wrap gap-4">

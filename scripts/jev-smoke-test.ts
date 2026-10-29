@@ -7,7 +7,7 @@
  *
  * The key is read from the environment only. Nothing in this script, or in
  * the app, hardcodes one. Use the printed probabilities to tune
- * jevDoneThreshold (default 0.75) and jevPartialThreshold (default 0.4).
+ * jevDoneThreshold (default 0.85) and jevPartialThreshold (default 0.25).
  */
 import { buildJevRequest, readingsFromJevResponse } from "../src/lib/checklist/jev";
 
@@ -66,7 +66,8 @@ async function main(): Promise<void> {
   const body = JSON.parse(raw) as { model?: string };
   const readings = readingsFromJevResponse(JSON.parse(raw));
   const byId = new Map(readings.map((reading) => [reading.id, reading.probability]));
-  console.log(`model: ${body.model ?? "(missing)"}`);
+  console.log(`request model: ${request.model}`);
+  console.log(`response model: ${body.model ?? "(missing)"}`);
   console.log("id        probability  item");
   for (const item of items) {
     const probability = byId.get(item.id);
@@ -74,7 +75,7 @@ async function main(): Promise<void> {
     console.log(`${item.id.padEnd(10)} ${shown}        ${item.text}`);
   }
   console.log("");
-  console.log("Done threshold starts at 0.75, partial at 0.40. Two highs in a row check an item off.");
+  console.log("Done threshold starts at 0.85, partial at 0.25. Two highs in a row, on two different transcripts, check an item off.");
 }
 
 await main();

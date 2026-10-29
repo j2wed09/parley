@@ -3,7 +3,7 @@ import { hasProviderKey } from "../ai/settings";
 import { meetingBriefText, transcriptAsText, useStore } from "../store";
 import * as ipc from "../ipc/commands";
 import { applyChecklistReadings } from "./coverage";
-import { buildJevRequest, readingsFromJevResponse } from "./jev";
+import { buildJevRequest, isJevTokenLimit, jevModelId, maxStateChars, readingsFromJevResponse, type JevRequest } from "./jev";
 
 export type ChecklistCheckSkip = "no-items" | "no-transcript" | "no-key";
 
@@ -30,15 +30,20 @@ async function runJevCheck(): Promise<{ marked: number } | { skip: ChecklistChec
   const state = useStore.getState();
   const open = state.todos.filter((todo) => !todo.done && !todo.locked && todo.text.trim());
   const transcript = transcriptAsText(state.segments, state.speakerNames);
-  const request = buildJevRequest({
+  const input = {
     title: state.meetingTitle,
     context: meetingBriefText(state),
     transcript,
     items: open,
-  });
+  };
+  const model = jevModelId(state.settings.jevModel);
+  const request = buildJevRequest(input, { model });
   if (!request) return { skip: "no-transcript" };
 
-  const body = await ipc.classifyWithJev({ request });
+  const body = await classifyWithRetry(request, () => {
+    const questions = Object.values(request.questions);
+    return buildJevRequest(input, { model, stateChars: Math.floor(maxStateChars(questions) / 2) });
+  });
   const readings = readingsFromJevResponse(body).map((reading) => ({
     ...reading,
     text: open.find((todo) => todo.id === reading.id)?.text,
@@ -53,6 +58,19 @@ async function runJevCheck(): Promise<{ marked: number } | { skip: ChecklistChec
   });
   if (next !== current) useStore.getState().setTodos(next);
   return { marked: next.filter((todo) => todo.done).length - before };
+}
+
+/** One automatic retry when Jev rejects the request for size. The second
+ *  request uses a smaller transcript budget. Any other error is not retried. */
+async function classifyWithRetry(request: JevRequest, smaller: () => JevRequest | null): Promise<unknown> {
+  try {
+    return await ipc.classifyWithJev({ request });
+  } catch (error) {
+    if (!isJevTokenLimit(error)) throw error;
+    const retry = smaller();
+    if (!retry) throw error;
+    return ipc.classifyWithJev({ request: retry });
+  }
 }
 
 async function runLlmCheck(): Promise<{ marked: number } | { skip: ChecklistCheckSkip }> {

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   JEV_MODEL,
   JEV_QUESTION_PREFIX,
+  TOKEN_HEADROOM,
   buildJevRequest,
+  isJevTokenLimit,
   jevInstructions,
   maxStateChars,
   readingsFromJevResponse,
@@ -22,7 +24,8 @@ describe("Jev checklist questions", () => {
       items,
     });
     expect(request).not.toBeNull();
-    expect(request?.model).toBe(JEV_MODEL);
+    expect(JEV_MODEL).toBe("jev-1.14.0");
+    expect(request?.model).toBe("jev-1.14.0");
     expect(Object.keys(request!.questions)).toEqual(["budget", "date"]);
     for (const item of items) {
       const instructions = request!.questions[item.id].instructions;
@@ -34,6 +37,34 @@ describe("Jev checklist questions", () => {
     expect(request?.state).toContain("Meeting: Acme renewal");
     expect(request?.state).toContain("Dana owns the account.");
     expect(request?.state).toContain("[them] Hi");
+  });
+
+  it("uses a configured model and falls back to the pin when it is blank", () => {
+    const input = { transcript: "[me] Hello", items: [{ id: "a", text: "Say hello" }] };
+    expect(buildJevRequest(input, { model: "jev-1.13.0" })?.model).toBe("jev-1.13.0");
+    expect(buildJevRequest(input, { model: "  " })?.model).toBe(JEV_MODEL);
+  });
+
+  it("holds back token headroom, and a tighter cap shortens the state", () => {
+    const questions = [{ instructions: jevInstructions("Confirm the budget") }];
+    const budget = maxStateChars(questions);
+    const questionTokens = Math.ceil((questions[0].instructions.length + 48) / 4);
+    expect(32_000 - Math.ceil(budget / 4) - questionTokens).toBeGreaterThanOrEqual(TOKEN_HEADROOM);
+
+    const lines = Array.from({ length: 8_000 }, (_, i) => `line ${i} ${"x".repeat(40)}`);
+    const full = buildJevRequest({ transcript: lines.join("\n"), items: [{ id: "a", text: "Confirm the budget" }] });
+    const half = buildJevRequest(
+      { transcript: lines.join("\n"), items: [{ id: "a", text: "Confirm the budget" }] },
+      { stateChars: Math.floor(budget / 2) },
+    );
+    expect(half!.state.length).toBeLessThan(full!.state.length);
+    expect(half!.state.length).toBeLessThanOrEqual(Math.floor(budget / 2));
+  });
+
+  it("recognizes a token-limit 400 and ignores other failures", () => {
+    expect(isJevTokenLimit(new Error('TypeSafe returned 400: {"detail":"max_tokens_exceeded"}'))).toBe(true);
+    expect(isJevTokenLimit(new Error("TypeSafe returned 400: bad question"))).toBe(false);
+    expect(isJevTokenLimit(new Error("TypeSafe returned 500: max_tokens_exceeded"))).toBe(false);
   });
 
   it("returns null without a transcript or without items", () => {
