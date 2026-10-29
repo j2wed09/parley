@@ -20,7 +20,9 @@ use tauri::AppHandle;
 
 use crate::commands::config::app_config_file;
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "parley-typesafe-api-key";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "parley";
 const KEY_FILE: &str = "typesafe-api-key";
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
