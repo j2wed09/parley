@@ -29,6 +29,7 @@ const ROUTES = [
   "finding-solution",
   "diagnostics",
   "voice-typing",
+  "teleprompter",
 ] as const;
 const window_ = ROUTES.find((r) => route.startsWith(r)) ?? "main";
 log.info("ui: boot", { window: window_ });
@@ -48,7 +49,7 @@ if (window_ === "settings") installSettingsBroadcast();
 // Not in the voice-typing overlay: the zoom is stored under one key shared by
 // every window on the origin, so zooming the main window used to scale the
 // overlay too — and a zoomed HUD overflows its fixed 460×180 window.
-if (window_ !== "voice-typing") restoreZoom();
+if (window_ !== "voice-typing" && window_ !== "teleprompter") restoreZoom();
 
 // The window-wide chords — ⌘, ⇧? and page zoom — from lib/commands/registry.ts.
 // Installed here rather than from a component because the secondary windows
@@ -153,6 +154,9 @@ const DiagnosticsApp = lazy(() =>
 const VoiceTypingApp = lazy(() =>
   import("./voice-typing/VoiceTypingApp").then((module) => ({ default: module.VoiceTypingApp }))
 );
+const TeleprompterApp = lazy(() =>
+  import("./components/teleprompter/TeleprompterApp").then((module) => ({ default: module.TeleprompterApp }))
+);
 
 function Root() {
   switch (window_) {
@@ -164,6 +168,8 @@ function Root() {
       return <DiagnosticsApp />;
     case "voice-typing":
       return <VoiceTypingApp />;
+    case "teleprompter":
+      return <TeleprompterApp />;
     default:
       return <App />;
   }
@@ -176,7 +182,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       {/* ⇧? in every window that is big enough to read it. The voice-typing
           overlay is a transient always-on-top strip — a cheat sheet there would
           have nowhere to go. */}
-      {window_ !== "voice-typing" && <ShortcutSheet />}
+      {window_ !== "voice-typing" && window_ !== "teleprompter" && <ShortcutSheet />}
     </Suspense>
   </React.StrictMode>,
 );

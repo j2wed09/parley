@@ -171,11 +171,26 @@ export interface TimelineEvent {
   author?: string;
 }
 
+/** How far the live conversation has covered a checklist item. */
+export type TodoCoverage = "open" | "partial" | "done";
+
+/** Who turns a pre-meeting brain dump into checklist lines. */
+export type ChecklistGenerator = "claude-cli" | "provider";
+
+/** Who decides, during the meeting, that an item has been covered. */
+export type TodoChecker = "jev" | "llm";
+
 /** A meeting to-do / agenda item to make sure gets covered. */
 export interface TodoItem {
   id: string;
   text: string;
   done: boolean;
+  /** Absent means open. The classifier only moves this forward. */
+  coverage?: TodoCoverage;
+  /** Set when the user checks or unchecks by hand. The classifier leaves it alone. */
+  locked?: boolean;
+  /** Consecutive classifier reads at or above the done threshold. */
+  streak?: number;
 }
 
 /**
@@ -398,6 +413,20 @@ export interface Settings {
   evalTemplates: EvalTemplate[];
   /** Library of TODO/agenda templates (built-in + custom) you can apply. */
   todoTemplates: TodoTemplate[];
+  /** Brain-dump → checklist. `claude-cli` shells out to a local Claude Code
+   *  login; `provider` uses the configured LLM. */
+  checklistGenerator: ChecklistGenerator;
+  /** Live check-off. `jev` calls TypeSafe from the Rust side; `llm` is the
+   *  older provider prompt. */
+  todoChecker: TodoChecker;
+  /** Jev probability at or above this checks an item off (after a second high
+   *  read when {@link jevRequireConsecutive} is on). */
+  jevDoneThreshold: number;
+  /** Jev probability at or above this, and below the done line, marks an item
+   *  partly covered. */
+  jevPartialThreshold: number;
+  /** Require two high Jev reads in a row before checking an item off. */
+  jevRequireConsecutive: boolean;
   /** Per-metric opt-in for live delivery coaching (see DeliveryToggles). */
   delivery: DeliveryToggles;
   /** Whether to sync personal recordings + folders to Parley Cloud while signed in.

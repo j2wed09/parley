@@ -714,6 +714,29 @@ describe("todos + action items", () => {
     expect(todos.map((t) => t.done)).toEqual([true, true, false]);
   });
 
+  it("a manual toggle is locked, and the checker cannot undo it", () => {
+    useStore.getState().addTodo("item");
+    const id = useStore.getState().todos[0].id;
+    useStore.getState().toggleTodo(id);
+    useStore.getState().toggleTodo(id);
+    expect(useStore.getState().todos[0]).toMatchObject({ done: false, locked: true, coverage: "open" });
+    useStore.getState().markTodosDone([id]);
+    expect(useStore.getState().todos[0].done).toBe(false);
+  });
+
+  it("moveTodo and mergeTodoWithNext keep a done item done", () => {
+    useStore.getState().applyTodoTemplate(["one", "two", "three"]);
+    const [first, second] = useStore.getState().todos;
+    useStore.getState().moveTodo(first.id, 1);
+    expect(useStore.getState().todos.map((todo) => todo.text)).toEqual(["two", "one", "three"]);
+    useStore.getState().markTodosDone([second.id]);
+    useStore.getState().mergeTodoWithNext(second.id);
+    const merged = useStore.getState().todos[0];
+    expect(merged.text).toBe("two; one");
+    expect(merged.done).toBe(true);
+    expect(useStore.getState().todos).toHaveLength(2);
+  });
+
   it("applyTodoTemplate replaces the checklist (blank items dropped, all unchecked)", () => {
     useStore.getState().addTodo("stale");
     useStore.getState().applyTodoTemplate(["  agenda 1 ", "", "agenda 2"]);

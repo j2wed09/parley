@@ -347,6 +347,8 @@ export function useAnalysisEngine() {
   const toneBusy = useRef(false);
   /** Latest finalized segment end already seen by the tone check (per meeting). */
   const lastToneEndMs = useRef(0);
+  /** Latest finalized segment end already scored by the checklist check. */
+  const lastTodoEndMs = useRef(0);
 
   useEffect(() => {
     if (meetingStatus !== "recording") return;
@@ -354,6 +356,7 @@ export function useAnalysisEngine() {
     // wall-clock cooldown markers, so the first speech can trigger checks promptly
     // instead of being suppressed by a prior meeting's cadence.
     lastToneEndMs.current = 0;
+    lastTodoEndMs.current = 0;
     lastRun.current = { analysis: 0, todos: 0, tone: 0 };
 
     const tick = () => {
@@ -364,7 +367,6 @@ export function useAnalysisEngine() {
         settings,
         segments,
         speakerNames,
-        markTodosDone,
       } = useStore.getState();
       const now = Date.now();
 
@@ -373,19 +375,26 @@ export function useAnalysisEngine() {
         void runAnalysis({ mode: "live" });
       }
 
-      // Auto-check the TODO agenda every ~45s while recording. The manual "AI"
-      // button on the checklist runs the same pass on demand.
+      // Check the agenda off while recording. Jev runs about every 15s, and
+      // also shortly after new final speech. The LLM fallback stays on the
+      // slower 45s cadence. The manual button on the checklist runs the same
+      // pass on demand. Items the user locked are left alone inside the pass.
+      const finalEnd = segments.reduce((max, segment) => (segment.isFinal ? Math.max(max, segment.endMs) : max), 0);
+      const jev = settings.todoChecker !== "llm";
+      const todoInterval = jev ? 15_000 : 45_000;
+      const freshSpeech = jev && finalEnd > lastTodoEndMs.current && now >= lastRun.current.todos + 5_000;
+      const checkerReady = jev || hasProviderKey(settings, "realtime");
       if (
-        now >= lastRun.current.todos + 45_000 &&
+        (now >= lastRun.current.todos + todoInterval || freshSpeech) &&
         !todoBusy.current &&
-        hasProviderKey(settings, "realtime") &&
-        todos.some((t) => !t.done)
+        checkerReady &&
+        todos.some((t) => !t.done && !t.locked && t.text.trim())
       ) {
         lastRun.current.todos = now;
+        lastTodoEndMs.current = finalEnd;
         todoBusy.current = true;
-        import("../ai/todos")
-          .then(({ checkTodos }) => checkTodos({ settings, segments, todos, names: speakerNames }))
-          .then((ids) => ids.length && markTodosDone(ids))
+        import("../checklist/run")
+          .then(({ runChecklistCheck }) => runChecklistCheck())
           .catch((e) => console.error("[todos]", e))
           .finally(() => {
             todoBusy.current = false;
@@ -396,7 +405,7 @@ export function useAnalysisEngine() {
       // cooldowned. Fires only when there's fresh speech. Stores the full
       // assessment for the live Delivery panel, and surfaces NUDGES (never a
       // finding) so it stays out of the evaluations/timeline list.
-      const maxEndMs = segments.reduce((m, s) => (s.isFinal ? Math.max(m, s.endMs) : m), 0);
+      const maxEndMs = finalEnd;
       if (
         settings.delivery.tone &&
         !toneBusy.current &&

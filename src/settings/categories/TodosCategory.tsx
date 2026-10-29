@@ -1,19 +1,91 @@
+import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { TodoTemplate } from "../../lib/types";
+import type { ChecklistGenerator, TodoChecker, TodoTemplate } from "../../lib/types";
 import { useI18n } from "../../i18n";
-import { Section } from "../fields";
+import { isTauri } from "../../lib/tauriEvents";
+import * as ipc from "../../lib/ipc/commands";
+import { Field, Section } from "../fields";
+import { TypesafeKeyField } from "../TypesafeKeyField";
 import type { SettingsPanelProps } from "./types";
 
-/** Settings › To-dos: the agenda checklist templates. */
+/** Settings › To-dos: how a checklist is built, how it checks off, and the templates. */
 export function TodosCategory({ settings, patch }: Readonly<SettingsPanelProps>) {
   const { t } = useI18n();
+  const [folder, setFolder] = useState("~/Parley/checklists");
+  useEffect(() => {
+    if (!isTauri()) return;
+    ipc.checklistFolder().then(setFolder).catch(() => {});
+  }, []);
   return (
     <Section title={t("settings.todos.title")}>
       <p className="text-[11px] text-muted-foreground">
         {t("settings.todos.help")}
       </p>
+      <Field label={t("settings.todos.generator")}>
+        <select
+          value={settings.checklistGenerator}
+          onChange={(event) => patch({ checklistGenerator: event.target.value as ChecklistGenerator })}
+          className="h-8 max-w-sm rounded-lg border bg-transparent px-2 text-sm"
+        >
+          <option value="claude-cli">{t("settings.todos.generator.claude")}</option>
+          <option value="provider">{t("settings.todos.generator.provider")}</option>
+        </select>
+        <p className="max-w-sm text-[11px] text-muted-foreground">{t("settings.todos.generator.help")}</p>
+      </Field>
+      <Field label={t("settings.todos.checker")}>
+        <select
+          value={settings.todoChecker}
+          onChange={(event) => patch({ todoChecker: event.target.value as TodoChecker })}
+          className="h-8 max-w-sm rounded-lg border bg-transparent px-2 text-sm"
+        >
+          <option value="jev">{t("settings.todos.checker.jev")}</option>
+          <option value="llm">{t("settings.todos.checker.llm")}</option>
+        </select>
+        <p className="max-w-sm text-[11px] text-muted-foreground">{t("settings.todos.checker.help")}</p>
+      </Field>
+      <TypesafeKeyField />
+      <div className="flex flex-wrap gap-4">
+        <Field label={t("settings.todos.doneThreshold")}>
+          <Input
+            type="number"
+            min={0.05}
+            max={0.99}
+            step={0.05}
+            value={settings.jevDoneThreshold}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value)) patch({ jevDoneThreshold: value });
+            }}
+            className="h-8 w-24"
+          />
+        </Field>
+        <Field label={t("settings.todos.partialThreshold")}>
+          <Input
+            type="number"
+            min={0.05}
+            max={0.99}
+            step={0.05}
+            value={settings.jevPartialThreshold}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value)) patch({ jevPartialThreshold: value });
+            }}
+            className="h-8 w-24"
+          />
+        </Field>
+      </div>
+      <label className="flex items-start gap-2 text-xs">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={settings.jevRequireConsecutive}
+          onChange={(event) => patch({ jevRequireConsecutive: event.target.checked })}
+        />
+        <span>{t("settings.todos.consecutive")}</span>
+      </label>
+      <p className="text-[11px] text-muted-foreground">{t("settings.todos.folder", { folder })}</p>
       <div className="flex flex-col gap-4">
         {settings.todoTemplates.map((tpl) => (
           <TodoTemplateEditor

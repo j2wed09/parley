@@ -311,3 +311,30 @@ export const launchAtLoginStatus = () => invoke<boolean>("launch_at_login_status
 export const setLaunchAtLogin = (args: { enabled: boolean }) => invoke<boolean>("set_launch_at_login", args);
 export const markShowOnNextLaunch = () => invoke<void>("mark_show_on_next_launch");
 export const clearShowOnNextLaunch = () => invoke<void>("clear_show_on_next_launch");
+
+// ── Meeting checklist (checklist.rs) ─────────────────────────────────────────
+// The TypeSafe key never crosses this boundary. The webview sends a Jev
+// request body and gets a response body; Rust attaches the key.
+
+export interface PreparedChecklistFile {
+  name: string;
+  body: string;
+  error: string | null;
+}
+
+export interface ClaudeRunResult {
+  notFound: boolean;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export const checklistFolder = () => invoke<string>("checklist_folder");
+export const listPreparedChecklists = () => invoke<PreparedChecklistFile[]>("list_prepared_checklists");
+export const consumePreparedChecklist = (args: { name: string }) =>
+  invoke<void>("consume_prepared_checklist", args);
+export const runClaude = (args: { prompt: string }) => invoke<ClaudeRunResult>("run_claude", args);
+export const classifyWithJev = (args: { request: unknown }) => invoke<unknown>("classify_with_jev", args);
+export const typesafeKeyConfigured = () => invoke<boolean>("typesafe_key_configured");
+export const setTypesafeApiKey = (args: { key: string }) => invoke<void>("set_typesafe_api_key", args);
+export const clearTypesafeApiKey = () => invoke<void>("clear_typesafe_api_key");

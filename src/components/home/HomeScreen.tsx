@@ -1,4 +1,4 @@
-import { ArrowRight, ClipboardList, FileAudio, Import, Keyboard, Mic, X } from "lucide-react";
+import { ArrowRight, ClipboardList, FileAudio, Import, Keyboard, ListChecks, Mic, X } from "lucide-react";
 import { toast } from "sonner";
 import { DEFAULT_GETTING_STARTED, useStore } from "../../lib/store";
 import { loadHistoryEntry } from "../../lib/history/history";
@@ -17,6 +17,7 @@ import {
 import { shortcutCaps } from "../../lib/voiceTyping/caps";
 import { isSampleEntry } from "../../lib/onboarding/sample";
 import { TranscribingPulse, useTranscribingPulse } from "../onboarding/TranscribingPulse";
+import { PreparedChecklists } from "./PreparedChecklists";
 
 /**
  * The idle landing (R8c). Before this, idle showed the live cockpit with three
@@ -29,6 +30,7 @@ export function HomeScreen({ tree }: Readonly<{ tree: LibraryTree }>) {
   const { t, language } = useI18n();
   const userName = useStore((s) => s.settings.userName);
   const openLibrary = useStore((s) => s.openLibrary);
+  const setPrepOpen = useStore((s) => s.setPrepOpen);
   const gettingStarted = useStore((s) => s.settings.gettingStarted) ?? DEFAULT_GETTING_STARTED;
   const voiceTypingEnabled = useStore((s) => s.settings.voiceTypingEnabled);
   const voiceTypingShortcut = useStore((s) => s.settings.voiceTypingShortcut);
@@ -82,6 +84,10 @@ export function HomeScreen({ tree }: Readonly<{ tree: LibraryTree }>) {
               <Mic className="size-4" />
               {t("titlebar.startMeeting")}
             </Button>
+            <Button variant="outline" className="h-9" onClick={() => setPrepOpen(true)}>
+              <ListChecks className="size-4" />
+              {t("home.prepare")}
+            </Button>
             <Button
               variant="outline"
               className="h-9"
@@ -98,6 +104,8 @@ export function HomeScreen({ tree }: Readonly<{ tree: LibraryTree }>) {
           </div>
           <p className="text-xs text-muted-foreground">{t("home.dropHint")}</p>
         </section>
+
+        <PreparedChecklists />
 
         {/* ── Getting started (first lap) ─────────────────────────────────── */}
         {showChecklist && (

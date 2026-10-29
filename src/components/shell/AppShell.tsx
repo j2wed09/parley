@@ -8,6 +8,7 @@ import {
 import { LiveScreen } from "../live/LiveScreen";
 import { StudyScreen } from "../study/StudyScreen";
 import { HomeScreen } from "../home/HomeScreen";
+import { PrepScreen } from "../prep/PrepScreen";
 import { AppSidebar } from "./AppSidebar";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -173,5 +174,11 @@ function RouteContent({
   // on Home. "live" with no active meeting can still occur transiently between
   // stop and save — the cockpit stays up so the finalizing state has a floor.
   if (mode === "live") return <LiveScreen />;
+  return <HomeRoute tree={tree} />;
+}
+
+function HomeRoute({ tree }: Readonly<{ tree: ReturnType<typeof useLibraryTree> }>) {
+  const prepOpen = useStore((s) => s.prepOpen);
+  if (prepOpen) return <PrepScreen />;
   return <HomeScreen tree={tree} />;
 }

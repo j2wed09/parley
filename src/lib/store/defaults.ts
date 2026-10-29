@@ -9,6 +9,7 @@ import { translate, type TranslationKey } from "../../i18n/messages";
 import { DEFAULT_MODELS } from "../ai/providers";
 import { DEFAULT_LOCAL_STT_MODEL } from "../transcription/localModels";
 import { FALLBACK_STT_PROVIDER } from "../transcription/registry";
+import { DEFAULT_JEV_DONE_THRESHOLD, DEFAULT_JEV_PARTIAL_THRESHOLD } from "../checklist/thresholds";
 
 /** A translate function bound to a language, for resolving built-in templates. */
 export const tFor = (language: AppLanguage) => (key: TranslationKey) => translate(language, key);
@@ -96,6 +97,14 @@ export const DEFAULT_SETTINGS: Settings = {
   evaluations: defaultEvalDefs(tDefault),
   evalTemplates: buildPresetEvalTemplates(tDefault),
   todoTemplates: buildPresetTodoTemplates(tDefault),
+  // This fork checks the agenda off with Jev, and turns a brain dump into a
+  // checklist through the local Claude Code login. Both fall back to the
+  // configured LLM from Settings → To-dos.
+  checklistGenerator: "claude-cli",
+  todoChecker: "jev",
+  jevDoneThreshold: DEFAULT_JEV_DONE_THRESHOLD,
+  jevPartialThreshold: DEFAULT_JEV_PARTIAL_THRESHOLD,
+  jevRequireConsecutive: true,
   // Pace + pauses are free (timing/DSP) so default on; pitch + tone (LLM cost)
   // are opt-in. See DeliveryToggles.
   delivery: { pace: true, pitch: false, pauses: true, tone: false },
