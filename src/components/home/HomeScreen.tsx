@@ -45,7 +45,7 @@ export function HomeScreen({ tree }: Readonly<{ tree: LibraryTree }>) {
   const folderName = (id: string | null | undefined) =>
     id ? tree.personalFolders.find((f) => f.id === id)?.name : undefined;
   const recent = tree.summaries.slice(0, 6);
-  const locale = language === "en" ? "en-US" : "zh-TW";
+  const locale = language === "zh-TW" ? "zh-TW" : "en-US";
 
   // Staged entrance: sections land in reading order (start → recent), then the
   // recent rows cascade. Delays are inline so the sequence stays put

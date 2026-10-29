@@ -141,7 +141,7 @@ Conversation content is sensitive, so Parley runs straight from your machine:
 
 ## This fork
 
-A pre-meeting checklist, checked off during the call, with a compact window you can glance at.
+A pre-meeting checklist, checked off during the call, with a compact window you can glance at. The app opens in English. Traditional Chinese is still in Settings → Basic.
 
 - **Brain dump.** Home → **Prepare checklist**. Paste a script or a bullet dump and press **Generate**. Claude Code on this Mac (`claude -p`, JSON output) turns it into short items you can edit, reorder, merge, delete, and add to. A checklist template applies from that screen and from the live checklist. Settings → To-dos can switch generation to the configured language model instead.
 - **Prepared outside the app.** Drop a `.json` or `.md` file in `~/Parley/checklists`. It shows on Home. Opening it loads the title, optional time, context, and items, then moves the file to `~/Parley/checklists/applied/` so it leaves the pending list. The existing MCP `add_todo` tool still adds one item to the live meeting.

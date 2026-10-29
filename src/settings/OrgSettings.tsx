@@ -456,7 +456,7 @@ function OrgDetail({
   const owners = members ? ownerCount(members) : 0;
   const manage = canManage(myRole);
   const dateFmt = useMemo(
-    () => new Intl.DateTimeFormat(language === "en" ? "en" : "zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" }),
+    () => new Intl.DateTimeFormat(language === "zh-TW" ? "zh-TW" : "en", { year: "numeric", month: "2-digit", day: "2-digit" }),
     [language],
   );
 

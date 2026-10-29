@@ -18,7 +18,7 @@ export const tFor = (language: AppLanguage) => (key: TranslationKey) => translat
 // Built-in templates are seeded in the default language; the persist `merge`
 // (rehydrate) and `relocalizeBuiltins` (on language change) re-resolve them to
 // the active language afterward.
-const tDefault = tFor("zh-TW");
+const tDefault = tFor("en");
 
 /**
  * The push-to-talk trigger a fresh install starts on.
@@ -55,7 +55,7 @@ export const DEFAULT_GETTING_STARTED: GettingStartedState = Object.freeze({
 });
 
 export const DEFAULT_SETTINGS: Settings = {
-  language: "zh-TW",
+  language: "en",
   theme: "system",
   layout: "coach",
   onboarded: false,

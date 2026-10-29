@@ -3,8 +3,8 @@ import type { AppLanguage } from "../lib/types";
 export type Dict = Record<string, string>;
 
 export const LANGUAGE_OPTIONS: { value: AppLanguage; label: string; nativeLabel: string; flag: string }[] = [
-  { value: "zh-TW", label: "Traditional Chinese", nativeLabel: "繁體中文", flag: "tw" },
   { value: "en", label: "English", nativeLabel: "English", flag: "us" },
+  { value: "zh-TW", label: "Traditional Chinese", nativeLabel: "繁體中文", flag: "tw" },
 ];
 
 export const zhTW = {
@@ -2963,14 +2963,15 @@ export type TranslationKey = keyof typeof zhTW;
 /**
  * Pure translation lookup (no React/store dependency) so it can be used while
  * seeding/reconciling built-in templates as well as from the `useI18n` hook.
- * Falls back to zh-TW, then to the raw key.
+ * Falls back to English, then to the raw key. zh-TW stays a full dictionary;
+ * it is chosen from Settings, not used when a string is missing.
  */
 export function translate(
   language: AppLanguage,
   key: TranslationKey,
   vars?: Record<string, string | number>
 ): string {
-  const template = DICTS[language]?.[key] ?? zhTW[key] ?? key;
+  const template = DICTS[language]?.[key] ?? en[key] ?? key;
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (_, name: string) => String(vars[name] ?? ""));
 }
