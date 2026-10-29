@@ -407,7 +407,7 @@ describe("recoverCrashedMeetings", () => {
     expect(await history.recoverCrashedMeetings()).toBe(1);
     await flush();
     expect(disk.get("crashed")).toMatchObject({ id: "crashed", createdAt: 1_000, durationMs: 600_000, segments: [] });
-    expect((disk.get("crashed") as HistoryEntry).title).toContain("（已復原）");
+    expect((disk.get("crashed") as HistoryEntry).title).toContain("(recovered)");
     expect(calls).toContainEqual(["invoke", "discard_recording", { path: "/tmp-d.ogg" }]);
     expect(calls).toContainEqual(["invoke", "finish_meeting_journal", { meetingId: "crashed" }]);
     expect(calls).toContainEqual(["invoke", "finish_meeting_journal", { meetingId: "already" }]);

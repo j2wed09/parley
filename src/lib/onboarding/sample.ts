@@ -81,7 +81,8 @@ const MANIFESTS: Record<AppLanguage, SampleManifest> = {
   en: enManifestJson as SampleManifest,
 };
 
-/** The manifest for a UI language (anything but zh-TW gets English). */
+/** The manifest for a UI language. English is the default; the zh-TW sample
+ *  is used only when that language is selected. */
 export function sampleManifest(lang: AppLanguage): SampleManifest {
   return lang === "zh-TW" ? MANIFESTS["zh-TW"] : MANIFESTS.en;
 }

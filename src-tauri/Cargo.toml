@@ -37,7 +37,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+# `process` is required by checklist.rs (`tokio::process::Command` for the
+# Claude Code CLI). `io-util` is AsyncWriteExt on that child's stdin. Neither
+# is implied by the runtime features, and nothing else in the tree enables
+# `process`, so a release build fails without them.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "process"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 futures-util = "0.3"

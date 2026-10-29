@@ -1,4 +1,5 @@
 mod audio;
+mod checklist;
 mod autostart;
 mod ax_observe;
 mod cache;
@@ -281,7 +282,15 @@ pub fn run() {
             autostart::mark_show_on_next_launch,
             autostart::clear_show_on_next_launch,
             tray::tray_active,
-            tray::set_tray_labels
+            tray::set_tray_labels,
+            checklist::checklist_folder,
+            checklist::list_prepared_checklists,
+            checklist::consume_prepared_checklist,
+            checklist::run_claude,
+            checklist::classify_with_jev,
+            checklist::typesafe_key_configured,
+            checklist::set_typesafe_api_key,
+            checklist::clear_typesafe_api_key
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

@@ -388,9 +388,10 @@ export function presentAccel(
  * The model a user who has never picked one should be on, or `null` to leave
  * the setting alone. Never overrides an explicit choice (`chosen`), never moves
  * off a model that is already downloaded, and does nothing without a
- * recommendation. zh-TW users get Breeze when this machine runs it well
- * (Taiwanese Mandarin and code-switching are what it is for); everyone else
- * gets the backend's `recommendedId`.
+ * recommendation. The fork default is English, so a fresh install gets the
+ * backend's `recommendedId` (the multilingual Whisper model). Breeze is only
+ * chosen when the UI language is zh-TW and this machine runs it well
+ * (Taiwanese Mandarin and code-switching are what it is for).
  */
 export function autoLocalModelChoice(input: {
   current: string;

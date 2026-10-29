@@ -239,12 +239,12 @@ describe("loadSampleRecording", () => {
   });
 
   it("does not duplicate a sample already in the library", async () => {
-    const zh = sampleManifest("zh-TW");
-    routeInvoke([{ id: "other" }, { id: zh.id }]);
+    const existing = sampleManifest("en");
+    routeInvoke([{ id: "other" }, { id: existing.id }]);
 
     const id = await loadSampleRecording();
 
-    expect(id).toBe(zh.id);
+    expect(id).toBe(existing.id);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(invoke.mock.calls.map((c) => c[0])).toEqual(["list_history"]);
   });

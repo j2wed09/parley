@@ -40,27 +40,27 @@ describe("HandoffSection", () => {
     const copy = html.indexOf('data-handoff="copy"');
     expect(mcp).toBeGreaterThan(-1);
     expect(copy).toBeGreaterThan(mcp);
-    expect(html).toContain("讓 Claude Code 直接讀你的錄音資料庫，不用複製貼上。");
+    expect(html).toContain("Let Claude Code read your recording library directly — no copy-paste.");
     expect(html).toContain("claude mcp add --transport http parley http://127.0.0.1:3011/mcp");
-    expect(html).toContain("Claude Desktop 用這段設定");
-    expect(html).toContain("試試這樣問");
+    expect(html).toContain("Using Claude Desktop? Copy this config");
+    expect(html).toContain("Try asking");
     for (const q of ["Q-mcp-1", "Q-mcp-2", "Q-mcp-3"]) expect(html.indexOf(q)).toBeLessThan(copy);
-    expect(html).toContain("複製逐字稿（附分析提示）");
-    expect(html).toContain("複製這份報告");
+    expect(html).toContain("Copy transcript with prompt");
+    expect(html).toContain("Copy this report");
     for (const q of ["Q-copy-1", "Q-copy-2", "Q-copy-3"]) expect(html.indexOf(q)).toBeGreaterThan(copy);
   });
 
   it("waits for a connection until a client has introduced itself", () => {
     const html = render();
     expect(html).toContain('data-mcp-status="waiting"');
-    expect(html).toContain("等待連線… Parley 要保持開啟");
+    expect(html).toContain("Waiting for a connection… keep Parley open");
   });
 
   it("names the connected client", () => {
     activity.info = { client: { name: "claude-code", version: "2.1" }, lastRequestAt: Date.now(), recent: [] };
     const html = render();
     expect(html).toContain('data-mcp-status="connected"');
-    expect(html).toContain("已連線：claude-code v2.1");
+    expect(html).toContain("Connected: claude-code v2.1");
   });
 
   it("disables both copy buttons when there is nothing it may copy", () => {

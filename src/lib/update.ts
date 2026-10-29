@@ -25,6 +25,13 @@ import * as ipc from "./ipc/commands";
 
 const TOAST_ID = "app-update";
 
+/**
+ * This fork does not poll for updates. The updater endpoint in
+ * tauri.conf.json points at j2wed09/parley, not the upstream Pathors feed, and
+ * a check still only runs when someone asks from Settings.
+ */
+export const AUTO_UPDATE = false;
+
 // The live Update handle (carries downloadAndInstall); not serializable.
 let pending: Update | null = null;
 

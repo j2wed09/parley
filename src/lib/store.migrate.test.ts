@@ -20,8 +20,8 @@ type Persisted = { settings: Partial<Settings>; cloudAuth?: unknown };
 const current = () => useStore.getState();
 
 describe("persist version", () => {
-  it("is 4", () => {
-    expect(PERSIST_VERSION).toBe(4);
+  it("is 5", () => {
+    expect(PERSIST_VERSION).toBe(5);
   });
 });
 
@@ -65,6 +65,29 @@ describe("migratePersistedState v3 → v4", () => {
 
   it("drops pre-v3 state, as zustand did before a migrate existed", () => {
     expect(migratePersistedState({ settings: { onboarded: true } }, 2)).toBeUndefined();
+  });
+});
+
+describe("migratePersistedState v4 → v5 language", () => {
+  it("moves a saved zh-TW, the old default, to English once", () => {
+    const out = migratePersistedState({ settings: { language: "zh-TW", userName: "Jesse" } }, 4) as Persisted;
+    expect(out.settings.language).toBe("en");
+    expect(out.settings.userName).toBe("Jesse");
+  });
+
+  it("fills in English when the saved file never recorded a language", () => {
+    const out = migratePersistedState({ settings: { userName: "Jesse" } }, 4) as Persisted;
+    expect(out.settings.language).toBe("en");
+  });
+
+  it("leaves an explicit English choice alone", () => {
+    const out = migratePersistedState({ settings: { language: "en", userName: "Jesse" } }, 4) as Persisted;
+    expect(out.settings.language).toBe("en");
+  });
+
+  it("leaves zh-TW alone once the file is already on this version", () => {
+    const saved = { settings: { language: "zh-TW" as const, userName: "Jesse" } };
+    expect(migratePersistedState(saved, 5)).toBe(saved);
   });
 });
 

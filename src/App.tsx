@@ -46,7 +46,8 @@ import { initHistoryPersistSync, listenForRecordingSaved, recoverCrashedMeetings
 import { endMeeting, recoverOrphanedMeeting } from "./lib/meeting/controls";
 import { initSilenceGuard } from "./lib/meeting/silenceGuard";
 import { listenForSystemWake } from "./lib/meeting/sleepWake";
-import { checkForUpdate } from "./lib/update";
+import { AUTO_UPDATE, checkForUpdate } from "./lib/update";
+import { installTeleprompterHost } from "./lib/teleprompterSync";
 import {
   getPendingInstalledReleaseNotes,
   markReleaseNotesSeen,
@@ -250,6 +251,10 @@ const App = () => {
     runOrgNotices().catch(() => {});
   }, [signedInUserId]);
 
+  // The compact teleprompter is another window. This one owns the checklist
+  // and answers its check/uncheck clicks.
+  useEffect(() => installTeleprompterHost(), []);
+
   useEffect(() => {
     if (!isTauri()) return;
     getVersion()
@@ -270,8 +275,9 @@ const App = () => {
       refreshSession().catch((error) => log.warn("cloud: session refresh failed", { error: String(error) }));
     }
     // Skip update checks in dev — there are no updater artifacts and the banner
-    // just gets in the way while iterating.
-    if (import.meta.env.DEV) return;
+    // just gets in the way while iterating. This fork also leaves the launch
+    // check off (AUTO_UPDATE), so an upstream release cannot replace it.
+    if (import.meta.env.DEV || !AUTO_UPDATE) return;
     const RECHECK_MS = 30 * 60 * 1000; // every 30 min while the app stays open
     const first = setTimeout(() => {
       checkForUpdate({ silent: true }).catch((error) => log.warn("update: check failed", { error: String(error) }));

@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Check, Square, X, Plus, Sparkles } from "lucide-react";
+import { Check, CircleDashed, Square, X, Plus, Sparkles, TvMinimal } from "lucide-react";
+import { toast } from "sonner";
 import { useStore } from "../../lib/store";
-import { hasProviderKey } from "../../lib/ai/settings";
 import { useI18n } from "../../i18n";
+import { openTeleprompter } from "../../lib/teleprompter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +17,7 @@ import type { TodoItem } from "../../lib/types";
  */
 
 function TodoRow({ todo }: Readonly<{ todo: TodoItem }>) {
+  const { t } = useI18n();
   const toggleTodo = useStore((s) => s.toggleTodo);
   const removeTodo = useStore((s) => s.removeTodo);
   return (
@@ -25,12 +27,23 @@ function TodoRow({ todo }: Readonly<{ todo: TodoItem }>) {
         onClick={() => toggleTodo(todo.id)}
         className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
       >
-        {todo.done ? <Check className="size-4 text-success-foreground" /> : <Square className="size-4" />}
+        {todo.done ? (
+          <Check className="size-4 text-success-foreground" />
+        ) : todo.coverage === "partial" ? (
+          <CircleDashed className="size-4 text-amber-600 dark:text-amber-400" />
+        ) : (
+          <Square className="size-4" />
+        )}
       </button>
       <span
         className={`flex-1 text-sm leading-snug ${todo.done ? "text-muted-foreground line-through" : ""}`}
       >
         {todo.text}
+        {!todo.done && todo.coverage === "partial" && (
+          <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            {t("todos.partial")}
+          </span>
+        )}
       </span>
       <button
         type="button"
@@ -78,23 +91,23 @@ function AddForm() {
 export function TodosPanel() {
   const { t } = useI18n();
   const todos = useStore((s) => s.todos);
+  const templates = useStore((s) => s.settings.todoTemplates);
+  const applyTodoTemplate = useStore((s) => s.applyTodoTemplate);
   const [checking, setChecking] = useState(false);
 
   const done = todos.filter((x) => x.done).length;
 
   async function aiUpdate() {
-    const state = useStore.getState();
-    const { settings, todos: cur, speakerNames, markTodosDone } = state;
-    if (!hasProviderKey(settings, "realtime") || cur.length === 0) return;
-    // TODO agenda auto-check is LIVE-only — use the full live transcript.
-    const { segments } = state;
+    if (todos.length === 0) return;
     setChecking(true);
     try {
-      const { checkTodos } = await import("../../lib/ai/todos");
-      const ids = await checkTodos({ settings, segments, todos: cur, names: speakerNames });
-      if (ids.length) markTodosDone(ids);
+      const { runChecklistCheck } = await import("../../lib/checklist/run");
+      const result = await runChecklistCheck();
+      if ("skip" in result && result.skip === "no-key") toast.error(t("check.err.noKey"));
+      else if ("skip" in result && result.skip === "no-transcript") toast.message(t("check.err.noTranscript"));
     } catch (e) {
       console.error("checkTodos failed", e);
+      toast.error(t("check.err.failed"));
     } finally {
       setChecking(false);
     }
@@ -106,16 +119,47 @@ export function TodosPanel() {
         <span className="shrink-0">
           {todos.length > 0 ? t("todos.doneCount", { done, total: todos.length }) : t("todos.noItems")}
         </span>
+        {templates.length > 0 && (
+          <select
+            aria-label={t("todos.applyTemplate")}
+            className="ml-auto h-6 max-w-28 rounded-md border bg-transparent px-1 text-[11px]"
+            value=""
+            onChange={(event) => {
+              const template = templates.find((item) => item.id === event.target.value);
+              if (template) applyTodoTemplate(template.items);
+            }}
+          >
+            <option value="">{t("todos.applyTemplate")}</option>
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+              </option>
+            ))}
+          </select>
+        )}
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto h-6 shrink-0 px-2 text-[11px]"
+          className={`h-6 shrink-0 px-2 text-[11px] ${templates.length > 0 ? "" : "ml-auto"}`}
           disabled={checking || todos.length === 0}
           onClick={aiUpdate}
           title={t("todos.aiTitle")}
         >
           <Sparkles className={`size-3 ${checking ? "animate-pulse" : ""}`} />
           AI
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-[11px]"
+          onClick={() => {
+            void openTeleprompter().catch((error: unknown) => {
+              toast.error(error instanceof Error ? error.message : String(error));
+            });
+          }}
+          title={t("prep.teleprompter")}
+        >
+          <TvMinimal className="size-3" />
         </Button>
       </div>
 

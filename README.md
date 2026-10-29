@@ -8,6 +8,8 @@
   <strong>Record the meeting. Then hand it to the AI you already use.</strong>
 </p>
 
+> **This is Jesse Anglen's fork** of [Parley](https://github.com/pathorsAI/parley): a meeting teleprompter. Before the call, notes become a checklist. During the call, items tick off in whatever order they get covered, and a small always-on-top window shows what's left. It builds the open-source edition only and does not install upstream releases. Setup is in [This fork](#this-fork).
+
 <p align="center">
   <a href="https://github.com/pathorsAI/parley/releases/latest"><img src="https://img.shields.io/github/v/release/pathorsAI/parley?label=release&color=2ea44f" alt="Latest release"></a>
   <a href="https://github.com/pathorsAI/parley/actions/workflows/release.yml"><img src="https://github.com/pathorsAI/parley/actions/workflows/release.yml/badge.svg" alt="Release Status"></a>
@@ -137,16 +139,76 @@ Conversation content is sensitive, so Parley runs straight from your machine:
 
 ---
 
+## This fork
+
+A pre-meeting checklist, checked off during the call, with a compact window you can glance at. The app opens in English. Traditional Chinese is still in Settings → Basic.
+
+- **Brain dump.** Home → **Prepare checklist**. Paste a script or a bullet dump and press **Generate**. Claude Code on this Mac (`claude -p`, JSON output) turns it into short items you can edit, reorder, merge, delete, and add to. A checklist template applies from that screen and from the live checklist. Settings → To-dos can switch generation to the configured language model instead.
+- **Prepared outside the app.** Drop a `.json` or `.md` file in `~/Parley/checklists`. It shows on Home. Opening it loads the title, optional time, context, and items, then moves the file to `~/Parley/checklists/applied/` so it leaves the pending list. The existing MCP `add_todo` tool still adds one item to the live meeting.
+- **Jev checks items off.** While recording, each open item is one yes/no question against the transcript so far (`POST https://api.typesafe.ai/v1/systemone`, model `jev-1.14.0`). A pass runs only when new final speech has arrived, and not more often than every 15 seconds, so two highs in a row are two different transcripts. At or above **0.85** (twice in a row, by default) the item is done. Between **0.25** and that line it is marked partly covered. Those cutoffs were tuned on `jev-1.14.0`: genuinely covered items scored 0.89–0.99, a passing mention scored 0.30–0.77, and not-covered items stayed at or below 0.12. The classifier never unchecks an item and never overrides a click. Settings → To-dos can change the model id and the thresholds, or switch check-off back to the older language-model checker. The TypeSafe key is stored in the macOS keychain (or a `0600` file in the app config directory) and is sent only from the Rust side. The transcript budget keeps about 8,000 tokens of headroom under Jev's 32k-per-question limit. If a request still comes back `400 max_tokens_exceeded`, it is sent once more with half the transcript.
+- **Teleprompter.** A small, resizable, always-on-top window, visible on every Space, shows the remaining items. Done items collapse. A click checks or unchecks by hand. Tauri content protection is on, so the window is hidden from many screen-sharing paths (`NSWindowSharingNone` on macOS, display affinity on Windows). Some newer capture APIs, including ScreenCaptureKit, can still record a protected window depending on the macOS version and the app doing the capture. Treat that as a courtesy, not a guarantee.
+- **Open source only.** `bun run dev` and `bun run build` set `VITE_PARLEY_CLOUD=false`, so sign-in, sync, and hosted providers are compiled out. Automatic update checks are off, and the updater endpoint points at `j2wed09/parley` rather than upstream Pathors releases.
+
+### Setup
+
+1. **Speech-to-text.** Settings → Transcription. A Deepgram or Soniox API key is the straightforward cloud option; an on-device model works with no key.
+2. **Claude Code**, for turning notes into a checklist. Install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), run `claude` once, and log in. The app looks for `claude` on `PATH`, and also in `/opt/homebrew/bin`, `/usr/local/bin`, and `~/.local/bin` (a Dock launch does not inherit a terminal `PATH`). Override the binary with `PARLEY_CLAUDE_BIN` if it lives somewhere else. If the CLI is missing or not logged in, Generate says so. Settings → To-dos can use the configured language model instead, which needs its own key under Settings → Provider.
+3. **TypeSafe**, for live check-off. Settings → To-dos → paste the API key → **Save key**. The field clears after that; the window does not keep the key. Without a key, Jev reports that it is not set.
+
+### Checklist files
+
+`~/Parley/checklists/acme.json`:
+
+```json
+{
+  "title": "Acme renewal",
+  "meetingTime": "2026-10-29T15:00:00-07:00",
+  "context": "Dana owns the account.",
+  "items": ["Confirm who owns the budget", "Ask what success looks like in 90 days"]
+}
+```
+
+An item may also be `{ "text": "..." }`. `meetingTime` and `context` are optional. `meetingTime` is shown as written; it is not added to a calendar.
+
+`~/Parley/checklists/acme.md`:
+
+```markdown
+---
+title: Acme renewal
+meetingTime: Thursday 3pm
+context: Dana owns the account.
+---
+
+- Confirm who owns the budget
+- Ask what success looks like in 90 days
+```
+
+A leading `# Title` is used when front matter has no title. `-`, `*`, and `1.` lines are items. Other lines become the context when front matter did not set one.
+
+### Tuning Jev
+
+Thresholds live in Settings → To-dos. To see real probabilities before changing them:
+
+```bash
+TYPESAFE_API_KEY="…" bun run jev-smoke-test
+```
+
+The script (`scripts/jev-smoke-test.ts`) reads the key from the environment, sends a sample transcript and four checklist items to the pinned model (`jev-1.14.0`, the same default as the app), and prints each item's probability plus the model version that answered. It does not read a key from the repo. Do not commit a key. The app's model id is a setting (Settings → To-dos) and defaults to that pin. `jev-latest` is accepted there, but it moves when TypeSafe ships a release, so retune the thresholds before relying on it.
+
+---
+
 ## 🛠️ Build from source
 
 Requires **Rust** (stable), **Bun** (or Node.js), and **CMake** plus **libclang** for the on-device transcription engine (see [CONTRIBUTING.md](CONTRIBUTING.md#native-build-prerequisites)):
 
 ```bash
-git clone https://github.com/pathorsAI/parley.git
+git clone https://github.com/j2wed09/parley.git
 cd parley
 bun install
 bun run tauri dev
 ```
+
+`bun run dev` and `bun run build` force `VITE_PARLEY_CLOUD=false`. Do not install a release built from `pathorsAI/parley` over this fork: that build would replace it and turn automatic updates back toward upstream.
 
 Before opening a PR, `bunx tsc --noEmit` and `bunx vitest run` must both pass. See [CLAUDE.md](CLAUDE.md) for the repository conventions.
 

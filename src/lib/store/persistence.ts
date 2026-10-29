@@ -162,8 +162,9 @@ function isTemplateList(value: unknown, field: "items" | "evals"): boolean {
   );
 }
 
-/** Persist schema version. v4 added `gettingStarted` + `hintsSeen`. */
-export const PERSIST_VERSION = 4;
+/** Persist schema version. v4 added `gettingStarted` + `hintsSeen`. v5 moves
+ *  this fork off the old zh-TW default, once. */
+export const PERSIST_VERSION = 5;
 
 /**
  * zustand-persist `migrate`, run when the stored version differs from
@@ -176,16 +177,21 @@ export const PERSIST_VERSION = 4;
  * - Anything older than v3 had no `migrate` before this one existed, so zustand
  *   dropped it and started from defaults. That is preserved by returning
  *   undefined, which `merge` treats as "nothing persisted".
+ * - v4 → v5: this fork's UI default changed from zh-TW to English. A saved
+ *   `zh-TW` (or a missing language) is the old default, not a choice, so it
+ *   becomes English once. A later switch back to zh-TW is stored at v5 and
+ *   left alone.
  *
  * Exported for tests.
  */
 export function migratePersistedState(persisted: unknown, version: number): unknown {
   if (version < 3) return undefined;
+  if (version >= PERSIST_VERSION) return persisted;
+  let state = (persisted ?? {}) as { settings?: Partial<Settings> };
   if (version < 4) {
-    const state = (persisted ?? {}) as { settings?: Partial<Settings> };
     const settings = state.settings;
     if (settings?.onboarded === true) {
-      return {
+      state = {
         ...state,
         settings: {
           ...settings,
@@ -194,9 +200,17 @@ export function migratePersistedState(persisted: unknown, version: number): unkn
         },
       };
     }
-    return state;
   }
-  return persisted;
+  if (version < 5) state = migrateForkLanguage(state);
+  return state;
+}
+
+/** The one-time move off the old zh-TW product default. */
+function migrateForkLanguage(state: { settings?: Partial<Settings> }): { settings?: Partial<Settings> } {
+  const settings = state.settings;
+  if (!settings) return state;
+  if (settings.language === "en") return state;
+  return { ...state, settings: { ...settings, language: "en" } };
 }
 
 /**

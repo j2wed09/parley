@@ -4,8 +4,9 @@
   "version": "0.34.5",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "VITE_PARLEY_CLOUD=false vite",
+    "build": "VITE_PARLEY_CLOUD=false tsc && VITE_PARLEY_CLOUD=false vite build",
+    "jev-smoke-test": "bun scripts/jev-smoke-test.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "release": "node scripts/release.mjs",

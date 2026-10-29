@@ -87,7 +87,7 @@ const LABELS = {
 
 export function AnalysisErrorDialog() {
   const { language } = useI18n();
-  const lang = language === "en" ? "en" : "zh-TW";
+  const lang = language === "zh-TW" ? "zh-TW" : "en";
 
   const analysisError = useStore((s) => s.analysisError);
   const analysisStatus = useStore((s) => s.analysisStatus);

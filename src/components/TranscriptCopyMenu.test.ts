@@ -41,18 +41,18 @@ describe("TranscriptCopyMenu", () => {
   it("offers the analysis-prompt copy first, above a hairline and the three formats", () => {
     const items = html.split("data-item").slice(1);
     expect(items).toHaveLength(4);
-    expect(items[0]).toContain("附分析提示");
-    expect(items[0]).toContain("整段可直接貼到 ChatGPT 或 Claude");
-    expect(items[1]).toContain("含講者");
-    expect(items[2]).toContain("純文字");
-    expect(items[3]).toContain("含講者與時間");
+    expect(items[0]).toContain("With analysis prompt");
+    expect(items[0]).toContain("Paste straight into ChatGPT or Claude");
+    expect(items[1]).toContain("With speaker");
+    expect(items[2]).toContain("Plain text");
+    expect(items[3]).toContain("With speaker &amp; time");
     const hr = html.indexOf("<hr");
-    expect(hr).toBeGreaterThan(html.indexOf("附分析提示"));
-    expect(hr).toBeLessThan(html.indexOf("每句標上說話者"));
+    expect(hr).toBeGreaterThan(html.indexOf("With analysis prompt"));
+    expect(hr).toBeLessThan(html.indexOf("Each line labelled by speaker"));
   });
 
   it("explains the new item the first time the menu opens", () => {
-    const explainer = html.indexOf("要給 ChatGPT 或 Claude 分析？選「附分析提示」，貼上就能問。");
+    const explainer = html.indexOf("Want ChatGPT or Claude to analyze this? Pick “With analysis prompt” and paste.");
     expect(explainer).toBeGreaterThan(-1);
     expect(explainer).toBeLessThan(html.indexOf("data-item"));
   });
